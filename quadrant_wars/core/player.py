@@ -45,13 +45,13 @@ class HumanPlayer(Player):
 
 class BotStrategy(ABC):
     name = "Bot"
-    worker_target_ratio = 0.18
-    max_workers = 8
-    attack_margin = 1.35
-    attack_ratio = 0.6
+    worker_target_ratio = 0.12
+    max_workers = 5
+    attack_margin = 1.08
+    attack_ratio = 0.68
     reserve_ratio = cfg.BOT_DEFENSE_RESERVE_RATIO
-    late_min_margin = 0.85
-    late_attack_ratio = 0.72
+    late_min_margin = 0.78
+    late_attack_ratio = 0.82
 
     def should_buy_worker(self, home: object) -> bool:
         if home.workers.count >= self.max_workers:
@@ -69,8 +69,8 @@ class BotStrategy(ABC):
         return min(enemies, key=lambda t: t.defense_value)
 
     def attack_amount(self, source: object, target: object) -> int:
-        reserve = max(2, int(source.soldiers.count * self.reserve_ratio))
-        hard_available = max(0, source.soldiers.count - 2)
+        reserve = max(1, int(source.soldiers.count * self.reserve_ratio))
+        hard_available = max(0, source.soldiers.count - 1)
         soft_available = max(0, source.soldiers.count - reserve)
         required = math.ceil(target.defense_value * self.attack_margin)
         if hard_available < required:
@@ -81,35 +81,35 @@ class BotStrategy(ABC):
 
 class AggressiveStrategy(BotStrategy):
     name = "Aggressive"
-    worker_target_ratio = 0.10
-    max_workers = 5
-    attack_margin = 1.00
-    attack_ratio = 0.88
-    reserve_ratio = 0.08
-    late_min_margin = 0.72
-    late_attack_ratio = 0.88
+    worker_target_ratio = 0.07
+    max_workers = 4
+    attack_margin = 0.92
+    attack_ratio = 0.92
+    reserve_ratio = 0.05
+    late_min_margin = 0.66
+    late_attack_ratio = 0.92
 
 
 class EconomicStrategy(BotStrategy):
     name = "Economic"
-    worker_target_ratio = 0.18
-    max_workers = 7
-    attack_margin = 1.30
-    attack_ratio = 0.58
-    reserve_ratio = 0.34
-    late_min_margin = 0.82
-    late_attack_ratio = 0.76
+    worker_target_ratio = 0.16
+    max_workers = 6
+    attack_margin = 1.12
+    attack_ratio = 0.66
+    reserve_ratio = 0.24
+    late_min_margin = 0.76
+    late_attack_ratio = 0.78
 
 
 class BalancedStrategy(BotStrategy):
     name = "Balanced"
-    worker_target_ratio = 0.12
+    worker_target_ratio = 0.10
     max_workers = 5
-    attack_margin = 1.62
-    attack_ratio = 0.52
-    reserve_ratio = 0.48
-    late_min_margin = 0.96
-    late_attack_ratio = 0.58
+    attack_margin = 0.98
+    attack_ratio = 0.72
+    reserve_ratio = 0.20
+    late_min_margin = 0.70
+    late_attack_ratio = 0.84
 
 
 STRATEGIES = [AggressiveStrategy, BalancedStrategy, EconomicStrategy]
@@ -156,14 +156,14 @@ class BotPlayer(Player):
 
         if self._attack_cooldown > 0:
             return
-        sources = [t for t in match.territories if t.owner is self and t.soldiers.count > 3]
+        sources = [t for t in match.territories if t.owner is self and t.soldiers.count > 2]
         for source in sorted(sources, key=lambda t: t.soldiers.count, reverse=True):
             target = self._strategy.choose_target(match, self, source)
             if target is None:
                 continue
             amount = self._strategy.attack_amount(source, target)
-            if amount == 0 and getattr(match, "elapsed", 0.0) > 360.0:
-                hard_available = max(0, source.soldiers.count - 2)
+            if amount == 0 and getattr(match, "elapsed", 0.0) > 120.0:
+                hard_available = max(0, source.soldiers.count - 1)
                 if hard_available > target.defense_value * self._strategy.late_min_margin:
                     amount = min(
                         hard_available,

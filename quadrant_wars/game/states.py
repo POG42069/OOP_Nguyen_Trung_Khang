@@ -8,6 +8,23 @@ from quadrant_wars.game.game_manager import Match
 from quadrant_wars.ui.renderer import Renderer, SIDEBAR_X
 from quadrant_wars.ui.widgets import Button
 
+PLAYER_SELECT_KEYS = {
+    pygame.K_F1: 0,
+    pygame.K_F2: 1,
+    pygame.K_F3: 2,
+    pygame.K_F4: 3,
+}
+PLAYER_RECRUIT_KEYS = {
+    pygame.K_q: (0, "soldier"),
+    pygame.K_a: (0, "worker"),
+    pygame.K_w: (1, "soldier"),
+    pygame.K_s: (1, "worker"),
+    pygame.K_e: (2, "soldier"),
+    pygame.K_d: (2, "worker"),
+    pygame.K_r: (3, "soldier"),
+    pygame.K_f: (3, "worker"),
+}
+
 
 class GameState:
     def _queue_sound(self, name: str) -> None:
@@ -106,6 +123,7 @@ class PlayingState(GameState):
     def __init__(self, match: Match) -> None:
         self._match = match
         self._selected = None
+        self._selected_by_player = {}
         self._attack_ratio = cfg.ATTACK_DEFAULT_RATIO
         self._renderer: Renderer | None = None
         self._sound_events: list[str] = []
@@ -114,6 +132,17 @@ class PlayingState(GameState):
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 return MenuState()
+            if event.key in PLAYER_SELECT_KEYS:
+                if self._select_home_for_player(PLAYER_SELECT_KEYS[event.key]):
+                    self._queue_sound("click")
+                return self
+            if event.key in PLAYER_RECRUIT_KEYS:
+                player_id, unit_type = PLAYER_RECRUIT_KEYS[event.key]
+                if self._buy_for_player(player_id, unit_type):
+                    self._queue_sound("recruit")
+                else:
+                    self._queue_sound("click")
+                return self
             if event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_UP):
                 self._attack_ratio = min(1.0, self._attack_ratio + 0.25)
                 self._queue_sound("click")
@@ -137,7 +166,7 @@ class PlayingState(GameState):
                 amount = max(1, int(self._selected.soldiers.count * self._attack_ratio))
                 self._match.issue_attack(self._selected, territory, amount)
             elif isinstance(territory.owner, HumanPlayer) and getattr(territory.owner, "is_alive", False):
-                self._selected = territory
+                self._select_territory(territory)
                 self._queue_sound("click")
         return self
 
@@ -154,6 +183,40 @@ class PlayingState(GameState):
         if self._renderer is None:
             self._renderer = Renderer(screen)
         self._renderer.draw_match(self._match, self._selected, self._attack_ratio)
+
+    def _select_territory(self, territory: object) -> None:
+        self._selected = territory
+        owner = getattr(territory, "owner", None)
+        if isinstance(owner, HumanPlayer):
+            self._selected_by_player[owner.id] = territory
+
+    def _select_home_for_player(self, player_id: int) -> bool:
+        if player_id >= len(self._match.players):
+            return False
+        player = self._match.players[player_id]
+        if not isinstance(player, HumanPlayer) or not player.is_alive:
+            return False
+        territory = self._match.home_territory(player)
+        if territory is None:
+            return False
+        self._select_territory(territory)
+        return True
+
+    def _buy_for_player(self, player_id: int, unit_type: str) -> bool:
+        if player_id >= len(self._match.players):
+            return False
+        player = self._match.players[player_id]
+        if not isinstance(player, HumanPlayer) or not player.is_alive:
+            return False
+        territory = self._selected_by_player.get(player_id) or self._match.home_territory(player)
+        if territory is None or territory.owner is not player:
+            territory = self._match.home_territory(player)
+        if territory is None:
+            return False
+        self._select_territory(territory)
+        if unit_type == "soldier":
+            return territory.buy_soldier()
+        return territory.buy_worker()
 
 
 class GameOverState(GameState):

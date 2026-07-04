@@ -301,11 +301,12 @@ class Renderer:
         lines = [
             "Select your territory.",
             "Click an enemy to send troops.",
-            "Use 1/2 to recruit, +/- to tune attack.",
+            "Use 1/2 or player hotkeys.",
+            "F1-F4 focus, Q/A W/S E/D R/F recruit.",
         ]
         self._screen.blit(self._tiny.render("COMMANDS", True, cfg.ACCENT_2), (rect.x + 16, rect.y + 14))
         for i, line in enumerate(lines):
-            self._screen.blit(self._small.render(line, True, cfg.TEXT), (rect.x + 16, rect.y + 38 + i * 24))
+            self._screen.blit(self._tiny.render(line, True, cfg.TEXT), (rect.x + 16, rect.y + 38 + i * 20))
         return rect.bottom
 
     def _draw_command_key(self, x: int, y: int, key: str, label: str) -> None:

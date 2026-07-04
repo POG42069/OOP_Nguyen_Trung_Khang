@@ -43,7 +43,20 @@ class CombatResolverTest(unittest.TestCase):
         self.assertEqual(result.killed_defending_soldiers, 5)
         self.assertEqual(result.surviving_attackers, 0)
 
+    def test_exposed_worker_takes_chip_damage(self) -> None:
+        territory = make_territory(soldiers=0, workers=1)
+        result = CombatResolver.resolve(1, territory)
+        self.assertFalse(result.attacker_won)
+        self.assertEqual(result.killed_workers, 1)
+        self.assertFalse(result.queen_killed)
+
+    def test_exposed_queen_can_be_finished_by_any_attack(self) -> None:
+        territory = make_territory(soldiers=0, workers=0)
+        result = CombatResolver.resolve(1, territory)
+        self.assertTrue(result.attacker_won)
+        self.assertTrue(result.queen_killed)
+        self.assertEqual(result.surviving_attackers, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
-

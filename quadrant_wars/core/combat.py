@@ -24,6 +24,8 @@ class CombatResolver:
             return CombatResult(False, 0, 0, 0, False)
 
         remaining = attacking_soldiers
+        exposed_workers = territory.soldiers.count == 0
+        exposed_queen = exposed_workers and territory.workers.count == 0
 
         soldier_duels = min(remaining, territory.soldiers.count)
         remaining -= soldier_duels
@@ -33,14 +35,19 @@ class CombatResolver:
             return CombatResult(False, 0, killed_defending_soldiers, 0, False)
 
         killed_workers = min(territory.workers.count, remaining // cfg.WORKER_COMBAT_VALUE)
+        if exposed_workers and territory.workers.count > 0 and killed_workers == 0:
+            killed_workers = 1
         remaining -= killed_workers * cfg.WORKER_COMBAT_VALUE
+        remaining = max(0, remaining)
 
         if territory.workers.count > killed_workers:
             return CombatResult(False, 0, killed_defending_soldiers, killed_workers, False)
 
-        queen_killed = territory.queen.is_alive and remaining >= cfg.QUEEN_COMBAT_VALUE
+        queen_killed = territory.queen.is_alive and (
+            remaining >= cfg.QUEEN_COMBAT_VALUE or (exposed_queen and remaining > 0)
+        )
         if queen_killed:
-            remaining -= cfg.QUEEN_COMBAT_VALUE
+            remaining = max(0, remaining - cfg.QUEEN_COMBAT_VALUE)
             return CombatResult(True, remaining, killed_defending_soldiers, killed_workers, True)
 
         return CombatResult(False, 0, killed_defending_soldiers, killed_workers, False)
@@ -54,4 +61,3 @@ class CombatResolver:
             if hasattr(old_owner, "eliminate"):
                 old_owner.eliminate()
             territory.reset_after_capture(attacker, result.surviving_attackers)
-
