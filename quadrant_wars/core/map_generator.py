@@ -24,8 +24,8 @@ class MapGenerator:
         if not cfg.MIN_PLAYERS <= player_count <= cfg.MAX_PLAYERS:
             raise ValueError("player_count must be between 2 and 4")
         rng = random.Random(seed)
-        left, top = 70, 70
-        right, bottom = self._width - 310, self._height - 70
+        left, top = 20, 20
+        right, bottom = self._width - 20, self._height - 20
         cx = (left + right) / 2 + rng.uniform(-18, 18)
         cy = (top + bottom) / 2 + rng.uniform(-18, 18)
 

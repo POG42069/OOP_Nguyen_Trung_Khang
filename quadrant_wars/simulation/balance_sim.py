@@ -17,7 +17,7 @@ from quadrant_wars.game.game_manager import Match
 def run_match(player_count: int, seed: int, max_seconds: float = 900.0) -> dict[str, object]:
     rng = random.Random(seed)
     strategy_classes = [rng.choice(STRATEGIES) for _ in range(player_count)]
-    match = Match(["bot"] * player_count, seed=seed, bot_strategy_classes=strategy_classes)
+    match = Match(["bot"] * player_count, seed=seed, bot_strategy_classes=strategy_classes, headless=True)
     dt = 0.25
     while match.winner is None and match.elapsed < max_seconds:
         match.update(dt)

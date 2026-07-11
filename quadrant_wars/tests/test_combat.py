@@ -25,6 +25,7 @@ class CombatResolverTest(unittest.TestCase):
         self.assertEqual(result.killed_defending_soldiers, 6)
         self.assertEqual(result.killed_workers, 1)
         self.assertFalse(result.queen_killed)
+        self.assertEqual(result.queen_damage_after, 2)
         self.assertEqual(result.surviving_attackers, 0)
 
     def test_14_attackers_win_exactly_against_6_soldiers_worker_queen(self) -> None:
@@ -43,19 +44,19 @@ class CombatResolverTest(unittest.TestCase):
         self.assertEqual(result.killed_defending_soldiers, 5)
         self.assertEqual(result.surviving_attackers, 0)
 
-    def test_exposed_worker_takes_chip_damage(self) -> None:
-        territory = make_territory(soldiers=0, workers=1)
-        result = CombatResolver.resolve(1, territory)
-        self.assertFalse(result.attacker_won)
-        self.assertEqual(result.killed_workers, 1)
-        self.assertFalse(result.queen_killed)
-
-    def test_exposed_queen_can_be_finished_by_any_attack(self) -> None:
+    def test_command_unit_damage_persists_between_attacks(self) -> None:
+        attacker = HumanPlayer(1, "Attacker", (0, 0, 255))
         territory = make_territory(soldiers=0, workers=0)
-        result = CombatResolver.resolve(1, territory)
-        self.assertTrue(result.attacker_won)
-        self.assertTrue(result.queen_killed)
-        self.assertEqual(result.surviving_attackers, 0)
+
+        first = CombatResolver.resolve(2, territory)
+        self.assertFalse(first.attacker_won)
+        CombatResolver.apply(first, territory, attacker)
+        self.assertEqual(territory.queen_guard_remaining, 2)
+
+        second = CombatResolver.resolve(2, territory)
+        self.assertTrue(second.attacker_won)
+        CombatResolver.apply(second, territory, attacker)
+        self.assertIs(territory.owner, attacker)
 
 
 if __name__ == "__main__":

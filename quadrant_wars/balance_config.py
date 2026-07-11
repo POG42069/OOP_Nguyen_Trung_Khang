@@ -1,15 +1,13 @@
 """Central gameplay constants for Quadrant Wars.
 
-Balance changelog:
-- Initial balanced profile favors 3-8 minute bot matches by making workers useful
-  but increasingly expensive, while keeping queen defense strong enough to stop
-  early all-in rushes.
-- Soldier travel is distance-based to preserve real-time counterplay.
-- Tempo pass: food and recruitment are faster, bots reserve fewer soldiers, and
-  attack cooldowns are shorter so fights start earlier instead of waiting for a
-  large safe advantage. In a 100-match batch for 2/3/4 bot players, average
-  match time landed around 1.27-1.54 minutes, no match ended under 30 seconds,
-  and the top strategy stayed at or below 60% wins.
+Balance changelog v3:
+- Economy further slowed: food 0.65/s/worker, soldier cost 12.
+- Queen HP raised to 80 for longer battles.
+- Soldier HP 12, combat ticks 0.8s, travel speed 80 → slower pacing.
+- Multi-territory: capture grants new queen + bonus food + keep workers.
+- Worker cap per territory = 5. Owning multiple territories = more total workers.
+- Spawn delay 1.5s between unit births.
+- Target: 6-10 minute 4-player matches.
 """
 
 WINDOW_WIDTH = 1280
@@ -19,25 +17,46 @@ FPS = 60
 MIN_PLAYERS = 2
 MAX_PLAYERS = 4
 
-STARTING_FOOD = 60.0
-STARTING_SOLDIERS = 8
+STARTING_FOOD = 20.0
+STARTING_SOLDIERS = 0
 STARTING_WORKERS = 1
 STARTING_QUEENS = 1
 
-FOOD_PER_WORKER_PER_SECOND = 6.0
-SOLDIER_COST = 14
-WORKER_BASE_COST = 48
-WORKER_COST_GROWTH = 1.34
+FOOD_PER_WORKER_PER_SECOND = 0.5
+SOLDIER_COST = 15
+WORKER_BASE_COST = 32
+WORKER_COST_GROWTH = 1.2
+
+MAX_WORKERS_PER_TERRITORY = 5
 
 QUEEN_COMBAT_VALUE = 4
 WORKER_COMBAT_VALUE = 2
 
-SOLDIER_TRAVEL_SPEED = 185.0
-BOT_DECISION_INTERVAL = 0.55
-BOT_MIN_ATTACK_INTERVAL = 2.8
+# --- HP / ATK system ---
+SOLDIER_HP = 12
+SOLDIER_ATK = 4
+SOLDIER_ATK_SPEED = 1.0
 
-BOT_DEFENSE_RESERVE_RATIO = 0.18
-ATTACK_DEFAULT_RATIO = 0.5
+WORKER_HP = 15
+WORKER_ATK = 0
+
+QUEEN_HP = 120
+QUEEN_ATK = 3
+QUEEN_ATK_SPEED = 0.5
+QUEEN_HP_REGEN = 0.4
+CAPITAL_REGEN_BONUS = 0.8
+
+COMBAT_TICK_INTERVAL = 1.0
+
+SOLDIER_TRAVEL_SPEED = 60.0
+BOT_DECISION_INTERVAL = 1.8
+BOT_MIN_ATTACK_INTERVAL = 18.0
+
+BOT_DEFENSE_RESERVE_RATIO = 0.25
+ATTACK_DEFAULT_RATIO = 0.65
+
+SPAWN_DELAY = 1.5
+CAPTURE_FOOD_BONUS = 15.0
 
 MENU_BG = (17, 20, 26)
 PANEL_BG = (29, 33, 40)
