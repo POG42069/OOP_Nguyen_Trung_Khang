@@ -1,12 +1,38 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Iterable
 
 from quadrant_wars import balance_config as cfg
 from quadrant_wars.core.unit import Queen, Soldier, Unit, Worker
 
 Point = tuple[float, float]
+
+
+class TerritorySpecialization(Enum):
+    NONE = auto()
+    ECONOMY = auto()
+    BARRACKS = auto()
+    FORTRESS = auto()
+
+
+@dataclass(frozen=True)
+class DevelopmentQuote:
+    specialization: TerritorySpecialization
+    current_level: int
+    resulting_level: int
+    cost: int
+    action: str
+    allowed: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class DevelopmentResult:
+    success: bool
+    quote: DevelopmentQuote | None
+    message: str
 
 
 @dataclass(frozen=True)
@@ -19,6 +45,8 @@ class TerritoryView:
     food: float
     queen_hp: float = 0.0
     queen_max_hp: int = 0
+    specialization: TerritorySpecialization = TerritorySpecialization.NONE
+    specialization_level: int = 0
 
 
 class Territory:
@@ -35,6 +63,8 @@ class Territory:
         self._spawn_timer = 0.0
         self._spawn_effects: list[float] = []
         self._visual_spawns: list[dict[str, any]] = []
+        self._specialization = TerritorySpecialization.NONE
+        self._specialization_level = 0
 
     @property
     def id(self) -> int:
@@ -103,22 +133,65 @@ class Territory:
         return self._visual_spawns
 
     @property
+    def specialization(self) -> TerritorySpecialization:
+        return self._specialization
+
+    @property
+    def specialization_level(self) -> int:
+        return self._specialization_level
+
+    @property
+    def worker_income_multiplier(self) -> float:
+        if self._specialization is TerritorySpecialization.ECONOMY:
+            return 1.0 + cfg.ECONOMY_INCOME_BONUS_PER_LEVEL * self._specialization_level
+        return 1.0
+
+    @property
+    def soldier_cost(self) -> int:
+        discount = 0
+        if self._specialization is TerritorySpecialization.BARRACKS:
+            discount = cfg.BARRACKS_SOLDIER_DISCOUNT_PER_LEVEL * self._specialization_level
+        return max(1, cfg.SOLDIER_COST - discount)
+
+    @property
+    def soldier_spawn_delay(self) -> float:
+        reduction = 0.0
+        if self._specialization is TerritorySpecialization.BARRACKS:
+            reduction = cfg.BARRACKS_SPAWN_REDUCTION_PER_LEVEL * self._specialization_level
+        return max(0.15, cfg.SPAWN_DELAY * (1.0 - reduction))
+
+    @property
+    def damage_taken_multiplier(self) -> float:
+        reduction = 0.0
+        if self._specialization is TerritorySpecialization.FORTRESS:
+            reduction = cfg.FORTRESS_DAMAGE_REDUCTION_PER_LEVEL * self._specialization_level
+        return max(0.1, 1.0 - reduction)
+
+    @property
+    def queen_regen_multiplier(self) -> float:
+        if self._specialization is TerritorySpecialization.FORTRESS:
+            return 1.0 + cfg.FORTRESS_QUEEN_REGEN_BONUS_PER_LEVEL * self._specialization_level
+        return 1.0
+
+    @property
     def defense_value(self) -> float:
         """Total defense strength - sum of all unit HP for bot evaluation."""
-        return (
+        raw = (
             self._soldiers.total_hp
             + self._workers.total_hp
             + (self._queen.total_hp if self._queen.is_alive else 0)
         )
+        return raw / self.damage_taken_multiplier
 
     @property
     def defense_value_legacy(self) -> int:
         """Legacy combat-value based defense for bot ratio calculations."""
-        return (
+        raw = (
             self._soldiers.total_combat_value
             + self._workers.total_combat_value
             + (self._queen.total_combat_value if self._queen.is_alive else 0)
         )
+        return int(round(raw / self.damage_taken_multiplier))
 
     @property
     def can_recruit(self) -> bool:
@@ -134,6 +207,8 @@ class Territory:
             food=self._food,
             queen_hp=self._queen.front_hp if self._queen.is_alive else 0.0,
             queen_max_hp=cfg.QUEEN_HP,
+            specialization=self._specialization,
+            specialization_level=self._specialization_level,
         )
 
     def add_food(self, amount: float) -> None:
@@ -156,13 +231,73 @@ class Territory:
             return False
         return self._food >= self.worker_cost()
 
+    def development_quote(self, specialization: TerritorySpecialization) -> DevelopmentQuote:
+        if specialization is TerritorySpecialization.NONE:
+            return DevelopmentQuote(
+                specialization, self._specialization_level, self._specialization_level,
+                0, "none", False, "Choose a development branch",
+            )
+        if not self.can_recruit:
+            return DevelopmentQuote(
+                specialization, self._specialization_level, self._specialization_level,
+                0, "blocked", False, "This territory cannot be developed",
+            )
+
+        if self._specialization is TerritorySpecialization.NONE:
+            cost = cfg.DEVELOPMENT_TIER_1_COST
+            resulting_level = 1
+            action = "build"
+        elif specialization is self._specialization:
+            if self._specialization_level >= cfg.DEVELOPMENT_MAX_LEVEL:
+                return DevelopmentQuote(
+                    specialization, self._specialization_level, self._specialization_level,
+                    0, "max", False, "Maximum level reached",
+                )
+            resulting_level = self._specialization_level + 1
+            cost = (
+                cfg.DEVELOPMENT_TIER_1_COST
+                if resulting_level == 1
+                else cfg.DEVELOPMENT_TIER_2_COST
+            )
+            action = "repair" if self._specialization_level == 0 else "upgrade"
+        else:
+            cost = cfg.DEVELOPMENT_CONVERSION_COST
+            resulting_level = 1
+            action = "convert"
+
+        allowed = self._food >= cost
+        reason = "" if allowed else f"Need {cost} gold in this territory"
+        return DevelopmentQuote(
+            specialization=specialization,
+            current_level=self._specialization_level,
+            resulting_level=resulting_level,
+            cost=cost,
+            action=action,
+            allowed=allowed,
+            reason=reason,
+        )
+
+    def develop(self, specialization: TerritorySpecialization) -> DevelopmentResult:
+        quote = self.development_quote(specialization)
+        if not quote.allowed:
+            return DevelopmentResult(False, quote, quote.reason)
+        if not self.spend_food(quote.cost):
+            return DevelopmentResult(False, quote, "Not enough local gold")
+        self._specialization = specialization
+        self._specialization_level = quote.resulting_level
+        branch = specialization.name.title()
+        return DevelopmentResult(True, quote, f"{branch} level {quote.resulting_level} ready")
+
     def buy_soldier(self, amount: int = 1) -> bool:
         if not self.can_recruit or amount <= 0:
             return False
-        cost = cfg.SOLDIER_COST * amount
+        cost = self.soldier_cost * amount
         if not self.spend_food(cost):
             return False
+        was_empty = not self._spawn_queue
         self._spawn_queue.extend(["soldier"] * amount)
+        if was_empty:
+            self._spawn_timer = self.soldier_spawn_delay
         return True
 
     def buy_worker(self) -> bool:
@@ -171,7 +306,10 @@ class Territory:
         cost = self.worker_cost()
         if not self.spend_food(cost):
             return False
+        was_empty = not self._spawn_queue
         self._spawn_queue.append("worker")
+        if was_empty:
+            self._spawn_timer = cfg.SPAWN_DELAY
         return True
 
     def remove_soldiers(self, amount: int) -> int:
@@ -188,7 +326,7 @@ class Territory:
 
         # Capital queen regens faster
         if self._is_capital and self._queen.is_alive:
-            extra_regen = cfg.CAPITAL_REGEN_BONUS * dt
+            extra_regen = cfg.CAPITAL_REGEN_BONUS * self.queen_regen_multiplier * dt
             if self._queen.front_hp < self._queen.max_hp:
                 self._queen.heal(extra_regen)
 
@@ -215,7 +353,13 @@ class Territory:
                     "index": self._soldiers.count - 1 if unit_type == "soldier" else self._workers.count - 1
                 })
                 self._spawn_effects.append(1.0)
-                self._spawn_timer = cfg.SPAWN_DELAY
+                if self._spawn_queue:
+                    next_unit = self._spawn_queue[0]
+                    self._spawn_timer = (
+                        self.soldier_spawn_delay if next_unit == "soldier" else cfg.SPAWN_DELAY
+                    )
+                else:
+                    self._spawn_timer = 0.0
 
     def eliminate_command_units(self) -> None:
         self._queen.remove(self._queen.count)
@@ -241,3 +385,5 @@ class Territory:
         self._spawn_queue.clear()
         self._visual_spawns.clear()
         self._spawn_timer = 0.0
+        if self._specialization is not TerritorySpecialization.NONE:
+            self._specialization_level = max(0, self._specialization_level - 1)

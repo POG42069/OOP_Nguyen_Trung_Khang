@@ -5,8 +5,11 @@ from enum import Enum, auto
 import pygame
 
 from quadrant_wars import balance_config as cfg
+from quadrant_wars.core.objective import WorldObjective
 from quadrant_wars.core.player import HumanPlayer
+from quadrant_wars.core.territory import TerritorySpecialization
 from quadrant_wars.game.game_manager import Match
+from quadrant_wars.ui.art import menu_background
 from quadrant_wars.ui.renderer import Renderer
 from quadrant_wars.ui.widgets import Button
 
@@ -16,6 +19,18 @@ class PlayerMenuState(Enum):
     SUMMON = auto()
     ATTACK_TARGET = auto()
     ATTACK_AMOUNT = auto()
+    STRATEGY = auto()
+    DEVELOPMENT = auto()
+
+
+DEVELOPMENT_CHOICES: tuple[TerritorySpecialization | None, ...] = (
+    TerritorySpecialization.ECONOMY,
+    TerritorySpecialization.BARRACKS,
+    TerritorySpecialization.FORTRESS,
+    None,
+)
+
+RECRUIT_CHOICES: tuple[str | None, ...] = ("soldier", "worker", None)
 
 
 class PlayerInput:
@@ -27,16 +42,38 @@ class PlayerInput:
         self.state = PlayerMenuState.IDLE
         self.target: object | None = None
         self.target_territory_ids: list[int] = []
+        self.summon_territory_ids: list[int] = []
+        self.summon_territory_index = 0
+        self.summon_choice_index = 0
+        self.development_territory_ids: list[int] = []
+        self.development_territory_index = 0
+        self.development_choice_index = 0
+        self.message = ""
 
     def reset(self) -> None:
         self.state = PlayerMenuState.IDLE
         self.target = None
+        self.target_territory_ids = []
+        self.summon_territory_ids = []
+        self.summon_territory_index = 0
+        self.summon_choice_index = 0
+        self.development_territory_ids = []
+        self.development_territory_index = 0
+        self.development_choice_index = 0
+        self.message = ""
 
     def to_dict(self) -> dict:
         return {
             "state": self.state.name.lower(),
             "target": self.target,
             "target_territories": self.target_territory_ids,
+            "summon_territories": self.summon_territory_ids,
+            "summon_index": self.summon_territory_index,
+            "summon_choice": self.summon_choice_index,
+            "development_territories": self.development_territory_ids,
+            "development_index": self.development_territory_index,
+            "development_choice": self.development_choice_index,
+            "message": self.message,
         }
 
 
@@ -48,12 +85,40 @@ PLAYER_KEYS = [
     (pygame.K_b, pygame.K_n, pygame.K_m),       # Player 4
 ]
 
+# Keycodes are layout-aware while scancodes identify the physical key.  Keep
+# both so the commands still work with an IME or a non-QWERTY keyboard layout.
+PLAYER_SCANCODES = [
+    (pygame.KSCAN_Q, pygame.KSCAN_W, pygame.KSCAN_E),
+    (pygame.KSCAN_I, pygame.KSCAN_O, pygame.KSCAN_P),
+    (pygame.KSCAN_Z, pygame.KSCAN_X, pygame.KSCAN_C),
+    (pygame.KSCAN_B, pygame.KSCAN_N, pygame.KSCAN_M),
+]
+
 KEY_LABELS = [
     ("Q", "W", "E"),
     ("I", "O", "P"),
     ("Z", "X", "C"),
     ("B", "N", "M"),
 ]
+
+
+def _command_key_from_event(event: pygame.event.Event, player_index: int) -> int | None:
+    """Resolve a player command from keycode, physical key, or text input."""
+    keys = PLAYER_KEYS[player_index]
+    event_key = getattr(event, "key", None)
+    if event_key in keys:
+        return event_key
+
+    scancode = getattr(event, "scancode", None)
+    physical_keys = PLAYER_SCANCODES[player_index]
+    if scancode in physical_keys:
+        return keys[physical_keys.index(scancode)]
+
+    character = getattr(event, "unicode", "").casefold()
+    for key, label in zip(keys, KEY_LABELS[player_index]):
+        if character == label.casefold():
+            return key
+    return None
 
 
 def _other_territory_indices(home_id: int, total_territories: int) -> list[int]:
@@ -102,30 +167,27 @@ class MenuState(GameState):
             self._big = pygame.font.SysFont("century gothic", 32)
 
     def _layout(self) -> list[Button]:
-        # Left sidebar buttons
-        sidebar_x = 40
+        panel_x = 42
         buttons = [
-            Button(pygame.Rect(sidebar_x, 400, 200, 40), "START MATCH", "start"),
-            Button(pygame.Rect(sidebar_x, 460, 200, 40), "EXIT", "exit"),
+            Button(pygame.Rect(panel_x, 530, 344, 52), "START BATTLE", "start"),
+            Button(pygame.Rect(panel_x, 596, 344, 42), "EXIT", "exit"),
         ]
-        
-        # Right side rows (Item Name < Value >)
-        row_x = 400
-        row_y = 200
-        row_w = 600
-        row_h = 50
-        spacing = 60
+
+        row_x = panel_x
+        row_y = 205
+        row_h = 44
+        spacing = 54
 
         buttons.extend([
-            Button(pygame.Rect(row_x + 350, row_y, 40, row_h), "<", "dec"),
-            Button(pygame.Rect(row_x + 520, row_y, 40, row_h), ">", "inc"),
+            Button(pygame.Rect(row_x + 214, row_y, 34, row_h), "<", "dec"),
+            Button(pygame.Rect(row_x + 300, row_y, 34, row_h), ">", "inc"),
         ])
 
-        for i in range(4): # Max 4 players
+        for i in range(4):
             y = row_y + spacing * (i + 1)
             buttons.extend([
-                Button(pygame.Rect(row_x + 350, y, 40, row_h), "<", f"toggle_l:{i}"),
-                Button(pygame.Rect(row_x + 520, y, 40, row_h), ">", f"toggle_r:{i}"),
+                Button(pygame.Rect(row_x + 214, y, 34, row_h), "<", f"toggle_l:{i}"),
+                Button(pygame.Rect(row_x + 300, y, 34, row_h), ">", f"toggle_r:{i}"),
             ])
 
         return buttons
@@ -158,82 +220,73 @@ class MenuState(GameState):
 
     def draw(self, screen: pygame.Surface) -> None:
         self._ensure_fonts()
-        
-        # 1. Background
         _draw_menu_background(screen, self._anim_t)
-        
-        # 2. Left Sidebar panel
-        sidebar = pygame.Surface((300, cfg.WINDOW_HEIGHT), pygame.SRCALPHA)
-        pygame.draw.rect(sidebar, (10, 15, 20, 180), sidebar.get_rect())
-        pygame.draw.line(sidebar, (40, 100, 140, 200), (298, 0), (298, cfg.WINDOW_HEIGHT), 2)
-        screen.blit(sidebar, (0, 0))
+        panel_rect = pygame.Rect(20, 20, 400, cfg.WINDOW_HEIGHT - 40)
+        _draw_glass_panel(screen, panel_rect)
 
-        # Sidebar text
-        title_surf = self._title.render("SETUP", True, (160, 200, 240))
-        screen.blit(title_surf, (40, 200))
-        pygame.draw.line(screen, (80, 140, 180), (40, 260), (200, 260), 2)
+        brand = self._title.render("QUADRANT", True, (255, 246, 219))
+        brand_2 = self._big.render("WARS", True, cfg.ACCENT_2)
+        screen.blit(brand, (42, 42))
+        screen.blit(brand_2, (44, 101))
+        sub = self._small.render("COMMAND THE FRONTIER", True, (183, 194, 187))
+        screen.blit(sub, (45, 151))
+        pygame.draw.line(screen, (215, 160, 65), (42, 184), (386, 184), 2)
 
-        start_btn = self._small.render("START BATTLE", True, (255, 255, 255))
-        screen.blit(start_btn, (60, 410))
-        exit_btn = self._small.render("EXIT GAME", True, (150, 160, 170))
-        screen.blit(exit_btn, (60, 470))
-
-        # Top Right Logo Area
-        logo_surf = self._title.render("QUADRANT WARS", True, (255, 255, 255))
-        screen.blit(logo_surf, (cfg.WINDOW_WIDTH - logo_surf.get_width() - 40, 40))
-
-        # 3. Right Side Settings Rows
-        row_x = 400
-        row_y = 200
-        row_w = 600
-        row_h = 50
-        spacing = 60
+        row_x = 42
+        row_y = 205
+        row_w = 344
+        row_h = 44
+        spacing = 54
 
         mouse_pos = pygame.mouse.get_pos()
 
-        def draw_row(y: int, name: str, value: str, inactive: bool = False):
+        def draw_row(y: int, name: str, value: str, inactive: bool = False, color: tuple[int, int, int] | None = None) -> None:
             rect = pygame.Rect(row_x, y, row_w, row_h)
             hover = rect.collidepoint(mouse_pos) and not inactive
-            # Row Background
-            bg_color = (20, 40, 60, 150) if hover else (15, 25, 35, 120)
+            bg_color = (36, 43, 42, 224) if hover else (23, 29, 29, 210)
             row_surf = pygame.Surface((row_w, row_h), pygame.SRCALPHA)
-            pygame.draw.rect(row_surf, bg_color, row_surf.get_rect())
+            pygame.draw.rect(row_surf, bg_color, row_surf.get_rect(), border_radius=5)
             screen.blit(row_surf, rect)
-            # Row Border
-            border_color = (60, 120, 180, 255) if hover else (40, 80, 120, 150)
-            pygame.draw.rect(screen, border_color, rect, 1)
+            border_color = (195, 156, 78) if hover else (76, 86, 82)
+            pygame.draw.rect(screen, border_color, rect, 1, border_radius=5)
 
-            # Name
-            text_color = (100, 110, 120) if inactive else (220, 230, 240)
-            name_surf = self._font.render(name, True, text_color)
-            screen.blit(name_surf, (row_x + 20, y + 8))
+            text_color = (94, 101, 98) if inactive else (226, 230, 218)
+            if color is not None:
+                pygame.draw.circle(screen, color if not inactive else (72, 75, 72), (row_x + 17, y + row_h // 2), 7)
+                label_x = row_x + 34
+            else:
+                label_x = row_x + 14
+            name_surf = self._small.render(name, True, text_color)
+            screen.blit(name_surf, (label_x, y + 12))
 
-            # Arrows & Value
             if not inactive:
-                arr_c = (150, 200, 250)
-                l_arr = self._font.render("<", True, arr_c)
-                r_arr = self._font.render(">", True, arr_c)
-                screen.blit(l_arr, (row_x + 365, y + 8))
-                screen.blit(r_arr, (row_x + 535, y + 8))
-                
-                val_surf = self._font.render(value, True, (255, 255, 255))
-                screen.blit(val_surf, val_surf.get_rect(center=(row_x + 450, y + 25)))
+                arr_c = (239, 202, 126)
+                for bx, symbol in ((row_x + 214, "<"), (row_x + 300, ">")):
+                    button_rect = pygame.Rect(bx, y + 5, 34, 34)
+                    pygame.draw.rect(screen, (45, 51, 49), button_rect, border_radius=4)
+                    pygame.draw.rect(screen, (91, 101, 96), button_rect, 1, border_radius=4)
+                    arrow = self._font.render(symbol, True, arr_c)
+                    screen.blit(arrow, arrow.get_rect(center=button_rect.center))
+                val_surf = self._small.render(value, True, (255, 247, 224))
+                screen.blit(val_surf, val_surf.get_rect(center=(row_x + 274, y + row_h // 2)))
 
-        # Player Count Row
-        draw_row(row_y, "NUMBER OF PLAYERS", str(self._player_count))
+        draw_row(row_y, "ARMIES", str(self._player_count))
 
-        # Slot Rows
         for i in range(4):
             y = row_y + spacing * (i + 1)
             if i < self._player_count:
-                p_type = self._types[i]
-                draw_row(y, f"PLAYER SLOT {i+1}", p_type)
-                # Draw color indicator
-                pygame.draw.circle(screen, cfg.PLAYER_COLORS[i], (row_x + 200, y + 25), 8)
+                p_type = "HUMAN" if self._types[i] == "Player" else "AI BOT"
+                draw_row(y, f"PLAYER {i + 1}", p_type, color=cfg.PLAYER_COLORS[i])
             else:
-                draw_row(y, f"PLAYER SLOT {i+1}", "CLOSED", True)
+                draw_row(y, f"PLAYER {i + 1}", "CLOSED", True, cfg.PLAYER_COLORS[i])
 
-        # Custom buttons are handled implicitly by invisible layout rectangles
+        layout = self._layout()
+        layout[0].draw(screen, self._small)
+        exit_button = layout[1]
+        pygame.draw.rect(screen, (24, 29, 29), exit_button.rect, border_radius=5)
+        pygame.draw.rect(screen, (90, 98, 94), exit_button.rect, 1, border_radius=5)
+        exit_text = self._small.render("EXIT", True, (177, 184, 178))
+        screen.blit(exit_text, exit_text.get_rect(center=exit_button.rect.center))
 
 class PlayingState(GameState):
     def __init__(self, match: Match) -> None:
@@ -250,10 +303,10 @@ class PlayingState(GameState):
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 return PauseState(self)
-            keys = pygame.key.get_pressed()
             for pi in self._player_inputs.values():
-                if event.key in (pi.key1, pi.key2, pi.key3):
-                    self._handle_player_key(pi, event.key, keys)
+                command_key = _command_key_from_event(event, pi.player_index)
+                if command_key is not None:
+                    self._handle_player_key(pi, command_key, None)
                     break
         return self
 
@@ -267,37 +320,56 @@ class PlayingState(GameState):
 
         if pi.state == PlayerMenuState.IDLE:
             if key == pi.key1:
+                pi.summon_territory_ids = [
+                    territory.id for territory in self._match.territories_of(player)
+                ]
+                pi.summon_territory_index = pi.summon_territory_ids.index(home.id)
+                pi.summon_choice_index = 0
+                pi.message = ""
                 pi.state = PlayerMenuState.SUMMON
                 self._queue_sound("click")
             elif key == pi.key2:
+                pi.target_territory_ids = _other_territory_indices(home.id, len(self._match.territories))
                 pi.state = PlayerMenuState.ATTACK_TARGET
                 self._queue_sound("click")
             elif key == pi.key3:
-                # Key 3 targets supply drop if it exists
-                if getattr(self._match, "supply_drop", None) is not None and self._match.supply_drop.active:
-                    pi.target = self._match.supply_drop
-                    pi.state = PlayerMenuState.ATTACK_AMOUNT
-                    self._queue_sound("click")
+                pi.state = PlayerMenuState.STRATEGY
+                pi.message = ""
+                self._queue_sound("click")
 
         elif pi.state == PlayerMenuState.SUMMON:
+            self._refresh_summon_selection(pi, player)
+            if not pi.summon_territory_ids:
+                pi.reset()
+                return
             if key == pi.key1:
-                # Buy soldier on all affordable territories
-                success = False
-                for t in self._match.territories_of(player):
-                    if t.buy_soldier():
-                        success = True
-                self._queue_sound("recruit" if success else "click")
-                pi.reset()
-            elif key == pi.key2:
-                success = False
-                for t in self._match.territories_of(player):
-                    if t.buy_worker():
-                        success = True
-                self._queue_sound("recruit" if success else "click")
-                pi.reset()
-            elif key == pi.key3:
-                pi.reset()
+                pi.summon_territory_index = (
+                    pi.summon_territory_index + 1
+                ) % len(pi.summon_territory_ids)
+                pi.message = ""
                 self._queue_sound("click")
+            elif key == pi.key2:
+                pi.summon_choice_index = (
+                    pi.summon_choice_index + 1
+                ) % len(RECRUIT_CHOICES)
+                pi.message = ""
+                self._queue_sound("click")
+            elif key == pi.key3:
+                choice = RECRUIT_CHOICES[pi.summon_choice_index]
+                if choice is None:
+                    pi.reset()
+                    self._queue_sound("click")
+                    return
+                territory_id = pi.summon_territory_ids[pi.summon_territory_index]
+                territory = self._match.territories[territory_id]
+                success = territory.buy_soldier() if choice == "soldier" else territory.buy_worker()
+                if success:
+                    self._queue_sound("recruit")
+                    pi.reset()
+                else:
+                    cost = territory.soldier_cost if choice == "soldier" else territory.worker_cost()
+                    pi.message = f"Need {cost} gold in T{territory.id + 1}"
+                    self._queue_sound("click")
 
         elif pi.state == PlayerMenuState.ATTACK_TARGET:
             # Recompute target_territory_ids based on current home
@@ -324,13 +396,99 @@ class PlayingState(GameState):
                     if source is pi.target:
                         continue # Don't attack yourself from yourself
                     amount = max(1, int(source.soldiers.count * ratio))
-                    if self._match.issue_attack(source, pi.target, amount):
+                    if isinstance(pi.target, WorldObjective):
+                        issued = self._match.issue_objective_attack(source, amount)
+                    else:
+                        issued = self._match.issue_attack(source, pi.target, amount)
+                    if issued:
                         success = True
                 if success:
                     self._queue_sound("attack")
                 else:
                     self._queue_sound("click")
                 pi.reset()
+
+        elif pi.state == PlayerMenuState.STRATEGY:
+            if key == pi.key1:
+                pi.development_territory_ids = [
+                    territory.id for territory in self._match.territories_of(player)
+                ]
+                pi.development_territory_index = 0
+                pi.development_choice_index = 0
+                pi.message = ""
+                pi.state = PlayerMenuState.DEVELOPMENT
+                self._queue_sound("click")
+            elif key == pi.key2:
+                objective = self._match.world_objective
+                if objective is not None and objective.active:
+                    pi.target = objective
+                    pi.state = PlayerMenuState.ATTACK_AMOUNT
+                    pi.message = ""
+                    self._queue_sound("click")
+                else:
+                    pi.message = "Objective is not ready"
+                    self._queue_sound("click")
+            elif key == pi.key3:
+                pi.reset()
+                self._queue_sound("click")
+
+        elif pi.state == PlayerMenuState.DEVELOPMENT:
+            self._refresh_development_selection(pi, player)
+            if not pi.development_territory_ids:
+                pi.reset()
+                return
+            if key == pi.key1:
+                pi.development_territory_index = (
+                    pi.development_territory_index + 1
+                ) % len(pi.development_territory_ids)
+                pi.message = ""
+                self._queue_sound("click")
+            elif key == pi.key2:
+                pi.development_choice_index = (
+                    pi.development_choice_index + 1
+                ) % len(DEVELOPMENT_CHOICES)
+                pi.message = ""
+                self._queue_sound("click")
+            elif key == pi.key3:
+                choice = DEVELOPMENT_CHOICES[pi.development_choice_index]
+                if choice is None:
+                    pi.reset()
+                    self._queue_sound("click")
+                    return
+                territory_id = pi.development_territory_ids[pi.development_territory_index]
+                result = self._match.develop_territory(player, territory_id, choice)
+                pi.message = result.message
+                if result.success:
+                    pi.reset()
+                    self._queue_sound("develop")
+                else:
+                    self._queue_sound("click")
+
+    def _refresh_development_selection(self, pi: PlayerInput, player: HumanPlayer) -> None:
+        current_id = None
+        if pi.development_territory_ids:
+            current_id = pi.development_territory_ids[
+                min(pi.development_territory_index, len(pi.development_territory_ids) - 1)
+            ]
+        owned_ids = [territory.id for territory in self._match.territories_of(player)]
+        pi.development_territory_ids = owned_ids
+        if current_id in owned_ids:
+            pi.development_territory_index = owned_ids.index(current_id)
+        else:
+            pi.development_territory_index = 0
+
+    def _refresh_summon_selection(self, pi: PlayerInput, player: HumanPlayer) -> None:
+        current_id = None
+        if pi.summon_territory_ids:
+            current_id = pi.summon_territory_ids[
+                min(pi.summon_territory_index, len(pi.summon_territory_ids) - 1)
+            ]
+        owned_ids = [territory.id for territory in self._match.territories_of(player)]
+        pi.summon_territory_ids = owned_ids
+        if current_id in owned_ids:
+            pi.summon_territory_index = owned_ids.index(current_id)
+        else:
+            pi.summon_territory_index = 0
 
     def update(self, dt: float) -> GameState:
         self._match.update(dt)
@@ -413,63 +571,54 @@ class GameOverState(GameState):
 
 
 def _draw_menu_background(screen: pygame.Surface, t: float = 0.0) -> None:
+    art = menu_background(screen.get_size())
+    if art is not None:
+        screen.blit(art, (0, 0))
+        grade = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        grade.fill((10, 14, 12, 28))
+        screen.blit(grade, (0, 0))
+
+        left_shade = pygame.Surface((560, cfg.WINDOW_HEIGHT), pygame.SRCALPHA)
+        for x in range(left_shade.get_width()):
+            ratio = x / left_shade.get_width()
+            alpha = int(138 * (1.0 - ratio) ** 1.7)
+            pygame.draw.line(left_shade, (3, 7, 6, alpha), (x, 0), (x, cfg.WINDOW_HEIGHT))
+        screen.blit(left_shade, (0, 0))
+    else:
+        screen.fill(cfg.MENU_BG)
+        for y in range(cfg.WINDOW_HEIGHT):
+            frac = y / cfg.WINDOW_HEIGHT
+            color = (int(17 + frac * 20), int(23 + frac * 24), int(23 + frac * 18))
+            pygame.draw.line(screen, color, (0, y), (cfg.WINDOW_WIDTH, y))
+
+    # Sparse embers are animated separately from the painted background.
     import math
-    screen.fill(cfg.MENU_BG)
-    # Rich gradient
-    for y in range(cfg.WINDOW_HEIGHT):
-        frac = y / cfg.WINDOW_HEIGHT
-        r = int(18 + frac * 32 + math.sin(t * 0.3 + frac * 3) * 4)
-        g = int(20 + frac * 18 + math.sin(t * 0.4 + frac * 2) * 3)
-        b = int(28 + frac * 12)
-        pygame.draw.line(screen, (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b))), (0, y), (cfg.WINDOW_WIDTH, y))
-
-    # Floating particles
     import random
-    rng = random.Random(42)
-    for i in range(40):
-        speed = rng.uniform(0.3, 1.2)
-        base_x = rng.randint(0, cfg.WINDOW_WIDTH)
-        base_y = rng.randint(0, cfg.WINDOW_HEIGHT)
-        px = int(base_x + math.sin(t * speed + i * 0.7) * 60) % cfg.WINDOW_WIDTH
-        py = int(base_y + math.cos(t * speed * 0.8 + i * 0.9) * 40) % cfg.WINDOW_HEIGHT
-        alpha = int(80 + math.sin(t * 1.5 + i) * 40)
-        r = max(2, int(4 + math.sin(t + i) * 2))
-        colors = [(248, 208, 68), (228, 138, 58), (168, 88, 48), (108, 178, 218)]
-        c = colors[i % len(colors)]
-        particle = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
-        pygame.draw.circle(particle, (*c, max(0, min(255, alpha))), (r, r), r)
-        screen.blit(particle, (px - r, py - r))
 
-    # Territory silhouettes
-    shapes = [
-        ([(90, 120), (300, 70), (365, 210), (210, 300), (70, 250)], cfg.PLAYER_COLORS[0]),
-        ([(930, 92), (1160, 120), (1194, 294), (1018, 338), (900, 220)], cfg.PLAYER_COLORS[1]),
-        ([(110, 470), (314, 405), (418, 570), (245, 650), (74, 610)], cfg.PLAYER_COLORS[2]),
-        ([(900, 500), (1128, 430), (1224, 594), (1045, 670), (872, 624)], cfg.PLAYER_COLORS[3]),
-    ]
-    for polygon, color in shapes:
-        shadow = [(x + 8, y + 10) for x, y in polygon]
-        pygame.draw.polygon(screen, (7, 9, 11), shadow)
-        dark = tuple(max(0, c - 80) for c in color)
-        pygame.draw.polygon(screen, dark, polygon)
-        pygame.draw.polygon(screen, tuple(min(255, c + 40) for c in color), polygon, 2)
+    rng = random.Random(42)
+    for i in range(18):
+        base_x = rng.randint(430, cfg.WINDOW_WIDTH)
+        base_y = rng.randint(60, cfg.WINDOW_HEIGHT)
+        px = int(base_x + math.sin(t * 0.35 + i) * 22)
+        py = int((base_y - t * (7 + i % 5)) % cfg.WINDOW_HEIGHT)
+        alpha = 70 + int(40 * math.sin(t * 1.3 + i))
+        pygame.draw.circle(screen, (245, 181, 84, max(20, alpha)), (px, py), 1 + i % 2)
 
 
 def _draw_glass_panel(screen: pygame.Surface, rect: pygame.Rect) -> None:
     """Draw a frosted glass panel with glow border."""
     shadow = rect.move(0, 12)
     shadow_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
-    pygame.draw.rect(shadow_surf, (0, 0, 0, 120), shadow_surf.get_rect(), border_radius=22)
+    pygame.draw.rect(shadow_surf, (0, 0, 0, 130), shadow_surf.get_rect(), border_radius=8)
     screen.blit(shadow_surf, shadow)
 
     panel = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-    pygame.draw.rect(panel, (24, 28, 36, 220), panel.get_rect(), border_radius=22)
+    pygame.draw.rect(panel, (13, 18, 18, 222), panel.get_rect(), border_radius=8)
     screen.blit(panel, rect)
 
-    # Inner highlight
-    pygame.draw.rect(screen, (58, 62, 72), rect, 2, border_radius=22)
+    pygame.draw.rect(screen, (83, 91, 85), rect, 1, border_radius=8)
     inner = rect.inflate(-6, -6)
-    pygame.draw.rect(screen, (78, 82, 92), inner, 1, border_radius=20)
+    pygame.draw.rect(screen, (43, 50, 47), inner, 1, border_radius=6)
 
 
 def fast_blur(surface: pygame.Surface, amount: float = 8.0) -> pygame.Surface:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import math
-import random
 
 import pygame
 
 from quadrant_wars import balance_config as cfg
-from quadrant_wars.core.territory import Territory
+from quadrant_wars.core.objective import WorldObjective, WorldObjectiveState, WorldObjectiveType
+from quadrant_wars.core.territory import Territory, TerritorySpecialization
 from quadrant_wars.game.game_manager import Match
+from quadrant_wars.ui.art import ArtAssets
 
 # Key labels for player HUD popups
 KEY_LABELS = [
@@ -16,6 +17,14 @@ KEY_LABELS = [
     ("Z", "X", "C"),
     ("B", "N", "M"),
 ]
+
+FORTRESS_STYLES = (
+    "fortress_western",
+    "fortress_northern",
+    "fortress_forest",
+    "fortress_sun",
+)
+RIVER_BUILDING_CLEARANCE = 120.0
 
 
 class Renderer:
@@ -27,34 +36,53 @@ class Renderer:
         self._title = pygame.font.SysFont("georgia", 28, bold=True)
         self._subtitle = pygame.font.SysFont("segoeui", 20, bold=True)
         self._bold_small = pygame.font.SysFont("segoeui", 13, bold=True)
+        self._art = ArtAssets(screen.get_size())
         self._background = self._build_background()
+        self._cloud_shadow = self._build_cloud_shadow()
+        self._water_layer = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        self._river_paths = _river_flow_paths(screen.get_size())
         self._unit_positions: dict[str, tuple[float, float]] = {}
         self._unit_targets: dict[str, tuple[float, float]] = {}
+        self._unit_facing: dict[str, int] = {}
         self._sprite_cache: dict[str, pygame.Surface] = {}
+        self._last_elapsed: float | None = None
+        self._frame_dt = 1.0 / max(30, cfg.FPS)
 
     def draw_match(self, match: object, player_states: dict[int, dict]) -> None:
+        elapsed = float(getattr(match, "elapsed", 0.0))
+        if self._last_elapsed is None or elapsed < self._last_elapsed:
+            self._frame_dt = 1.0 / max(30, cfg.FPS)
+            if self._last_elapsed is not None:
+                self._unit_positions.clear()
+                self._unit_targets.clear()
+                self._unit_facing.clear()
+        else:
+            self._frame_dt = min(0.05, max(0.0, elapsed - self._last_elapsed))
+        self._last_elapsed = elapsed
         self._screen.blit(self._background, (0, 0))
+        self._draw_animated_rivers(elapsed)
 
-        # Dynamic drifting cloud shadows
-        for i in range(8):
-            fx = (int(match.elapsed * 15.0 * (1 + (i % 3))) + i * 200) % cfg.WINDOW_WIDTH
-            fy = (int(math.sin(match.elapsed * 0.2 + i) * 50) + i * 100) % cfg.WINDOW_HEIGHT
-            cloud = pygame.Surface((400, 300), pygame.SRCALPHA)
-            pygame.draw.ellipse(cloud, (0, 0, 0, 25), cloud.get_rect())
-            self._screen.blit(cloud, (fx - 200, fy - 150))
+        # Broad, soft cloud shadows keep the battlefield alive without obscuring it.
+        for i in range(4):
+            fx = (int(match.elapsed * (8 + i * 1.8)) + i * 360) % (cfg.WINDOW_WIDTH + 420) - 210
+            fy = 80 + i * 175 + int(math.sin(match.elapsed * 0.18 + i) * 34)
+            self._screen.blit(self._cloud_shadow, self._cloud_shadow.get_rect(center=(fx, fy)))
 
-        # Draw territories (base terrain)
+        # Draw all ground layers before any structures.  This keeps grass,
+        # flowers, and rocks visually behind castles and specialization sites.
         for territory in match.territories:
             self._draw_territory(territory, match.elapsed)
-            self._draw_base_building(territory, match.elapsed)
 
-        # Environmental decor 
         for territory in match.territories:
             self._draw_territory_decor(territory, match.elapsed)
 
-        # Supply Drop
-        if getattr(match, "supply_drop", None) is not None:
-            self._draw_supply_drop(match.supply_drop, match.elapsed)
+        for territory in match.territories:
+            self._draw_specialization_building(territory, match.elapsed)
+            self._draw_base_building(territory, match.elapsed)
+
+        objective = getattr(match, "world_objective", None)
+        if objective is not None:
+            self._draw_world_objective(objective, match.elapsed, match.objective_countdown)
 
         # Wandering units
         for territory in match.territories:
@@ -87,138 +115,151 @@ class Renderer:
 
         # Minimal top-bar (time only)
         self._draw_top_bar(match)
+        self._draw_command_dock(match, player_states)
 
     def _build_background(self) -> pygame.Surface:
+        if self._art.battlefield is not None:
+            surface = self._art.battlefield.copy()
+            grade = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            grade.fill((18, 30, 16, 18))
+            surface.blit(grade, (0, 0))
+
+            vignette = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            for i in range(22):
+                alpha = max(2, 18 - i // 2)
+                rect = vignette.get_rect().inflate(-i * 14, -i * 10)
+                pygame.draw.rect(vignette, (3, 8, 4, alpha), rect, 9, border_radius=18)
+            surface.blit(vignette, (0, 0))
+            return surface
+
         surface = pygame.Surface((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT))
-        # Rich green gradient for RTS feel
         for y in range(cfg.WINDOW_HEIGHT):
             t = y / cfg.WINDOW_HEIGHT
-            r = int(28 + t * 24)
-            g = int(52 + t * 38 + math.sin(t * 6) * 8)
-            b = int(22 + t * 20)
-            pygame.draw.line(surface, (r, g, b), (0, y), (cfg.WINDOW_WIDTH, y))
-
-        # Subtle diamond grid pattern
-        rng = random.Random(456)
-        for x in range(0, cfg.WINDOW_WIDTH + 60, 60):
-            for y in range(0, cfg.WINDOW_HEIGHT + 60, 60):
-                ox = rng.randint(-4, 4)
-                oy = rng.randint(-4, 4)
-                c = rng.choice([(38, 72, 32), (42, 78, 36), (48, 82, 38)])
-                pygame.draw.circle(surface, c, (x + ox, y + oy), rng.randint(1, 3))
-
-        # Atmospheric fog patches
-        for i in range(12):
-            fx = rng.randint(0, cfg.WINDOW_WIDTH)
-            fy = rng.randint(0, cfg.WINDOW_HEIGHT)
-            fog = pygame.Surface((200, 120), pygame.SRCALPHA)
-            pygame.draw.ellipse(fog, (58, 88, 48, 12), fog.get_rect())
-            surface.blit(fog, (fx - 100, fy - 60))
-
+            pygame.draw.line(surface, (int(40 + 22 * t), int(88 + 42 * t), int(38 + 18 * t)), (0, y), (cfg.WINDOW_WIDTH, y))
         return surface
+
+    def _build_cloud_shadow(self) -> pygame.Surface:
+        small = pygame.Surface((120, 58), pygame.SRCALPHA)
+        for rect in ((4, 22, 70, 28), (34, 7, 78, 43), (62, 18, 54, 30)):
+            pygame.draw.ellipse(small, (3, 12, 5, 19), rect)
+        return pygame.transform.smoothscale(small, (420, 210))
+
+    def _draw_animated_rivers(self, elapsed: float) -> None:
+        river_mask = self._art.river_mask
+        if river_mask is None:
+            return
+
+        layer = self._water_layer
+        layer.fill((0, 0, 0, 0))
+        for path_index, path in enumerate(self._river_paths):
+            particle_count = 26
+            speed = 0.072 + path_index * 0.006
+            for i in range(particle_count):
+                progress = (i / particle_count + elapsed * speed + path_index * 0.11) % 1.0
+                x, y, tx, ty = _sample_path(path, progress)
+                lateral = math.sin(elapsed * 1.8 + i * 2.17 + path_index) * (5 + i % 3 * 2)
+                x += -ty * lateral
+                y += tx * lateral
+
+                glint = 0.5 + 0.5 * math.sin(elapsed * 3.4 + i * 1.73)
+                length = 7 + i % 4 * 2
+                start = (round(x - tx * length), round(y - ty * length))
+                end = (round(x + tx * length), round(y + ty * length))
+                pygame.draw.line(layer, (45, 178, 236, 35 + int(glint * 28)), start, end, 5)
+                pygame.draw.line(layer, (190, 239, 255, 75 + int(glint * 90)), start, end, 2)
+
+                if i % 8 == 0:
+                    ripple = pygame.Rect(0, 0, 16 + int(glint * 9), 6 + int(glint * 3))
+                    ripple.center = (round(x), round(y))
+                    pygame.draw.arc(layer, (226, 248, 255, 95), ripple, 0.15, math.pi - 0.15, 1)
+
+        layer.blit(river_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        self._screen.blit(layer, (0, 0))
 
     def _draw_territory(self, territory: Territory, elapsed: float) -> None:
         alive = getattr(territory.owner, "is_alive", False)
         base = territory.owner.color if alive else (72, 72, 68)
+        internal_borders = [
+            _organic_edge(start, end)
+            for start, end in _polygon_edges(territory.polygon)
+            if not _is_outer_map_edge(start, end)
+        ]
+        all_points = [
+            *territory.polygon,
+            *(point for border in internal_borders for point in border),
+        ]
+        xs = [int(p[0]) for p in all_points]
+        ys = [int(p[1]) for p in all_points]
+        bounds = pygame.Rect(min(xs) - 14, min(ys) - 14, max(xs) - min(xs) + 29, max(ys) - min(ys) + 29)
+        local = [(int(x - bounds.x), int(y - bounds.y)) for x, y in territory.polygon]
+        layer = pygame.Surface(bounds.size, pygame.SRCALPHA)
 
-        # Main terrain color with owner tint (much more distinct color, less generic green)
-        grass = _mix(_brighten(base, 20), (88, 158, 62), 0.2) if alive else (82, 82, 78)
+        # Preserve the painted ground while making ownership immediately readable.
+        tint_alpha = 58 if alive else 100
+        pygame.draw.polygon(layer, (*base, tint_alpha), local)
 
-        # Shadow polygon
-        shadow_pts = [(int(x + 5), int(y + 6)) for x, y in territory.polygon]
-        pygame.draw.polygon(self._screen, (12, 18, 8), shadow_pts)
+        pulse = 0.5 + 0.5 * math.sin(elapsed * 1.7 + territory.id * 1.4)
+        edge = _brighten(base, 48) if alive else (112, 108, 98)
+        # Keep the map-facing edges free of strokes.  Only ownership edges
+        # shared by territories receive the ornate border treatment.
+        for border_world in internal_borders:
+            border = [(int(x - bounds.x), int(y - bounds.y)) for x, y in border_world]
+            pygame.draw.lines(layer, (12, 18, 13, 135), False, border, 8)
+            pygame.draw.lines(layer, (91, 82, 61, 205), False, border, 5)
+            pygame.draw.lines(layer, (*_darken(base, 34), 238), False, border, 4)
+            pygame.draw.lines(layer, (*edge, int(178 + pulse * 50)), False, border, 2)
+            pygame.draw.aalines(layer, (255, 246, 210, 105), False, border)
 
-        # Fill with terrain gradient
-        pygame.draw.polygon(self._screen, grass, territory.polygon)
-
-        # Inner terrain texture (subtle stripes & rocky bumps)
-        cx, cy = territory.centroid
-        for i in range(15):
-            x, y = _decor_point(territory, 200 + i, 0.88)
-            stripe_c = _mix(grass, _brighten(grass, 18), 0.5)
-            pygame.draw.line(self._screen, stripe_c, (x - 8, y), (x + 8, y), 1)
-
-        # Rocky bumps
-        for i in range(20):
-            x, y = _decor_point(territory, 300 + i, 0.95)
-            bump_c = _darken(grass, 15 + (i % 10))
-            pygame.draw.circle(self._screen, bump_c, (x, y), 2 + (i % 2))
-            pygame.draw.circle(self._screen, _brighten(grass, 10), (x - 1, y - 1), 1)
-
-        # Inner glow around centroid
-        glow = pygame.Surface((200, 140), pygame.SRCALPHA)
-        glow_c = _brighten(base, 28) if alive else (68, 68, 64)
-        pygame.draw.ellipse(glow, (*glow_c, 22), glow.get_rect())
-        self._screen.blit(glow, glow.get_rect(center=(int(cx), int(cy))))
-
-        # Animated border pulse for alive territories
-        if alive:
-            pulse = 0.5 + 0.5 * math.sin(elapsed * 1.8 + territory.id * 1.5)
-            border_alpha = int(40 + pulse * 40)
-            border_c = _brighten(base, 42)
-            border_surf = pygame.Surface((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT), pygame.SRCALPHA)
-            pygame.draw.polygon(border_surf, (*border_c, border_alpha), territory.polygon, 3)
-            self._screen.blit(border_surf, (0, 0))
-        else:
-            pygame.draw.polygon(self._screen, (52, 52, 48), territory.polygon, 2)
-
-        # Inner edge highlight
-        inner_pts = _shrink_polygon(territory.polygon, 6)
-        if len(inner_pts) >= 3:
-            highlight_surf = pygame.Surface((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT), pygame.SRCALPHA)
-            pygame.draw.polygon(highlight_surf, (255, 248, 218, 12), inner_pts, 1)
-            self._screen.blit(highlight_surf, (0, 0))
+            for index, point in enumerate(border[2:-2:5]):
+                if (index + territory.id) % 2 == 0:
+                    pygame.draw.circle(layer, (255, 239, 190, 138), point, 2)
+        self._screen.blit(layer, bounds)
 
     def _draw_territory_hud(self, territory: Territory) -> None:
-        """Compact on-territory HUD showing key info."""
+        """Small ownership/resource marker; unit strength stays visual on the map."""
         cx, cy = territory.centroid
         cx, cy = int(cx), int(cy)
         owner_color = territory.owner.color
         alive = getattr(territory.owner, "is_alive", False)
 
-        # Owner name badge (smaller, elegant)
-        name = _fit_text(self._tiny, territory.owner.name, 120)
-        name_surf = self._tiny.render(name, True, (248, 242, 228))
-        badge_w = max(name_surf.get_width() + 28, 100)
-        badge = pygame.Rect(cx - badge_w // 2, cy - 72, badge_w, 22)
-        _draw_pill(self._screen, badge, (18, 22, 28, 200), owner_color if alive else (88, 88, 84))
-        self._screen.blit(name_surf, name_surf.get_rect(center=badge.center))
+        name = _fit_text(self._bold_small, territory.owner.name.upper(), 110)
+        name_surf = self._bold_small.render(name, True, (255, 249, 229))
+        badge_w = max(112, name_surf.get_width() + 36)
+        badge = pygame.Rect(cx - badge_w // 2, cy - 102, badge_w, 24)
+        _draw_popup_bg(self._screen, badge, owner_color if alive else (82, 82, 78), radius=5)
+        pygame.draw.rect(self._screen, owner_color if alive else (82, 82, 78), (badge.x, badge.y, 6, badge.height), border_radius=3)
+        self._screen.blit(name_surf, name_surf.get_rect(center=(badge.centerx - 2, badge.centery)))
 
-        # Capital star indicator
         if territory.is_capital and alive:
-            star_x = badge.right - 14
-            star_y = badge.centery
-            _draw_star(self._screen, (star_x, star_y), 5, (248, 208, 48))
+            _draw_star(self._screen, (badge.right - 13, badge.centery), 6, (255, 210, 62))
 
-        # Stats strip
-        strip_w = 172
-        strip = pygame.Rect(cx - strip_w // 2, cy + 62, strip_w, 24)
-        strip_surf = pygame.Surface((strip.width, strip.height), pygame.SRCALPHA)
-        pygame.draw.rect(strip_surf, (18, 22, 28, 180), strip_surf.get_rect(), border_radius=12)
-        self._screen.blit(strip_surf, strip)
-        pygame.draw.rect(self._screen, _darken(owner_color, 20) if alive else (68, 68, 64), strip, 1, border_radius=12)
+        if territory.specialization is not TerritorySpecialization.NONE:
+            branch = {
+                TerritorySpecialization.ECONOMY: "E",
+                TerritorySpecialization.BARRACKS: "B",
+                TerritorySpecialization.FORTRESS: "F",
+            }[territory.specialization]
+            level = territory.specialization_level
+            label = f"{branch} {level if level else 'RUIN'}"
+            chip = pygame.Rect(cx - 34, badge.bottom + 4, 68, 15)
+            fill = (35, 43, 37, 220) if level else (62, 47, 38, 220)
+            _draw_pill(self._screen, chip, fill, _brighten(owner_color, 22))
+            chip_text = self._tiny.render(label, True, (242, 232, 195))
+            self._screen.blit(chip_text, chip_text.get_rect(center=chip.center))
 
-        sx = strip.x + 10
-        sy = strip.centery
-        # Sword icon + soldier count
-        pygame.draw.line(self._screen, (198, 138, 58), (sx, sy + 4), (sx + 6, sy - 4), 2)
-        s_text = self._tiny.render(f"{territory.soldiers.count}", True, (248, 238, 218))
-        self._screen.blit(s_text, (sx + 10, sy - 6))
-        # Pickaxe + worker count
-        sx2 = sx + 42
-        pygame.draw.line(self._screen, (88, 158, 68), (sx2, sy + 3), (sx2 + 5, sy - 3), 2)
-        w_text = self._tiny.render(f"{territory.workers.count}/{cfg.MAX_WORKERS_PER_TERRITORY}", True, (248, 238, 218))
-        self._screen.blit(w_text, (sx2 + 9, sy - 6))
-        # Coin + food
-        sx3 = sx + 98
-        pygame.draw.circle(self._screen, (228, 188, 48), (sx3 + 3, sy - 1), 3)
-        f_text = self._tiny.render(f"{int(territory.food)}", True, (248, 238, 218))
-        self._screen.blit(f_text, (sx3 + 9, sy - 6))
+        # Gold remains numeric because it is a spendable resource, not a unit counter.
+        food_text = self._tiny.render(str(int(territory.food)), True, (255, 241, 196))
+        food = pygame.Rect(cx - 28, cy + 76, 56, 20)
+        _draw_pill(self._screen, food, (15, 20, 18, 210), (211, 163, 53))
+        pygame.draw.circle(self._screen, (242, 193, 66), (food.x + 12, food.centery), 5)
+        pygame.draw.circle(self._screen, (255, 230, 128), (food.x + 11, food.centery - 1), 2)
+        self._screen.blit(food_text, food_text.get_rect(center=(food.centerx + 8, food.centery)))
 
-        # Spawn queue indicator
         if territory.spawn_queue_size > 0:
-            q_text = self._tiny.render(f"+{territory.spawn_queue_size}", True, cfg.ACCENT_2)
-            self._screen.blit(q_text, (strip.right + 4, strip.centery - 6))
+            for i in range(min(4, territory.spawn_queue_size)):
+                phase = pygame.time.get_ticks() * 0.006 + i * 1.1
+                r = 2 + int((math.sin(phase) + 1) * 0.5)
+                pygame.draw.circle(self._screen, (255, 202, 83), (food.right + 8 + i * 7, food.centery), r)
 
         # Queen HP bar
         if territory.queen.is_alive:
@@ -227,44 +268,25 @@ class Renderer:
             if q_hp < q_max:
                 bar_w = 72
                 bar_h = 7
-                bar_rect = pygame.Rect(cx - bar_w // 2, strip.bottom + 6, bar_w, bar_h)
-                pygame.draw.rect(self._screen, (32, 14, 14), bar_rect, border_radius=3)
+                bar_rect = pygame.Rect(cx - bar_w // 2, food.bottom + 5, bar_w, bar_h)
+                pygame.draw.rect(self._screen, (24, 10, 9), bar_rect, border_radius=3)
                 fill_w = max(1, int(bar_w * q_hp / q_max))
                 hp_ratio = q_hp / q_max
                 bar_color = (68, 198, 82) if hp_ratio > 0.5 else (228, 178, 48) if hp_ratio > 0.25 else (218, 52, 42)
                 pygame.draw.rect(self._screen, bar_color, (bar_rect.x, bar_rect.y, fill_w, bar_h), border_radius=3)
-                pygame.draw.rect(self._screen, (228, 218, 188), bar_rect, 1, border_radius=3)
-                hp_label = self._tiny.render(f"♛{int(q_hp)}", True, (255, 228, 108))
-                self._screen.blit(hp_label, hp_label.get_rect(center=(cx, bar_rect.bottom + 8)))
+                pygame.draw.rect(self._screen, (235, 224, 190), bar_rect, 1, border_radius=3)
 
     def _draw_territory_decor(self, territory: Territory, elapsed: float) -> None:
-        # Draw lake first so it's under everything
-        if territory.id % 3 == 0:  # 1/3 of territories get a lake
-            x, y = _decor_point(territory, 99, 0.6)
-            _draw_lake(self._screen, (x, y), territory.id, elapsed)
-
-        # Draw grass patches
-        for i in range(25):
+        # The painted map already carries the biome. These accents add motion only.
+        for i in range(7):
             x, y = _decor_point(territory, 150 + i, 0.9)
             _draw_grass(self._screen, (x, y), elapsed + i)
 
-        # Draw rocks
-        for i in range(4):
+        for i in range(2):
             x, y = _decor_point(territory, 80 + i, 0.75)
-            _draw_rock(self._screen, (x, y), 0.5 + i * 0.1)
+            _draw_rock(self._screen, (x, y), 0.34 + i * 0.08)
 
-        # Draw bushes
-        for i in range(6):
-            x, y = _decor_point(territory, 60 + i, 0.8)
-            _draw_bush(self._screen, (x, y), 0.6 + i * 0.1)
-
-        # Draw 3D Trees (draw last to sort on top)
-        for i in range(8):
-            x, y = _decor_point(territory, 40 + i, 0.85)
-            _draw_tree(self._screen, (x, y), 0.8 + (i % 4) * 0.15)
-            
-        # Draw flowers
-        for i in range(5):
+        for i in range(4):
             x, y = _decor_point(territory, 100 + i, 0.82)
             _draw_flower(self._screen, (x, y), territory.owner.color, elapsed + i * 1.3)
 
@@ -272,65 +294,201 @@ class Renderer:
         x, y = _decor_point(territory, 7, 0.28)
         color = territory.owner.color
         alive = getattr(territory.owner, "is_alive", False)
+        width = 122 if territory.is_capital else 108
+        owner_id = int(getattr(territory.owner, "id", territory.id))
+        building_name = FORTRESS_STYLES[owner_id % len(FORTRESS_STYLES)]
+        building = self._art.building(building_name, width)
+        if building is None:
+            building = self._art.building("fortress", width)
 
-        # Ground shadow
-        pygame.draw.ellipse(self._screen, (12, 22, 10), (x - 48, y + 22, 100, 28))
+        shadow = pygame.Surface((width + 28, 36), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (2, 7, 3, 105), shadow.get_rect())
+        self._screen.blit(shadow, shadow.get_rect(center=(x, y + 20)))
 
-        if not alive:
-            # Ruined building
-            pygame.draw.rect(self._screen, (88, 78, 62), (x - 28, y, 60, 24), border_radius=4)
-            pygame.draw.line(self._screen, (68, 58, 42), (x - 20, y + 12), (x + 20, y + 12), 1)
+        ring = pygame.Surface((width + 20, 34), pygame.SRCALPHA)
+        pygame.draw.ellipse(ring, (*_darken(color, 25), 85 if alive else 45), ring.get_rect())
+        pygame.draw.ellipse(ring, (*_brighten(color, 28), 175 if alive else 80), ring.get_rect(), 2)
+        self._screen.blit(ring, ring.get_rect(center=(x, y + 14)))
+
+        if building is None:
+            pygame.draw.rect(self._screen, (135, 128, 110), (x - 42, y - 42, 84, 62), border_radius=5)
             return
 
-        # Castle base
-        base_front = [(x - 32, y + 20), (x + 38, y + 20), (x + 38, y - 4), (x - 32, y - 4)]
-        base_side = [(x + 38, y + 20), (x + 50, y + 12), (x + 50, y - 10), (x + 38, y - 4)]
-        base_top = [(x - 32, y - 4), (x + 38, y - 4), (x + 50, y - 10), (x - 20, y - 10)]
-        pygame.draw.polygon(self._screen, (178, 142, 72), base_front)
-        pygame.draw.polygon(self._screen, (138, 102, 52), base_side)
-        pygame.draw.polygon(self._screen, (198, 162, 88), base_top)
+        sprite = building
+        if not alive:
+            sprite = building.copy()
+            sprite.fill((92, 86, 76, 190), special_flags=pygame.BLEND_RGBA_MULT)
+        rect = sprite.get_rect(midbottom=(x, y + 30))
 
-        # Stone lines
-        for row in range(4):
-            ry = y + 16 - row * 6
-            pygame.draw.line(self._screen, (158, 118, 62), (x - 30, ry), (x + 36, ry), 1)
+        is_spawning = alive and bool(territory.visual_spawns or territory.spawn_queue_size > 0)
+        if alive:
+            glow = pygame.Surface((70, 52), pygame.SRCALPHA)
+            glow_alpha = int(82 + math.sin(elapsed * (7.5 if is_spawning else 2.4) + territory.id) * 32)
+            pygame.draw.ellipse(glow, (255, 176 if is_spawning else 210, 74, max(25, glow_alpha)), glow.get_rect())
+            self._screen.blit(glow, glow.get_rect(center=(x, y + 4)))
 
-        # Door with warm light
-        door = pygame.Rect(x - 5, y + 4, 16, 16)
-        pygame.draw.rect(self._screen, (62, 42, 26), door, border_radius=3)
-        
-        # Open door if spawning!
-        is_spawning = bool(territory.visual_spawns or territory.spawn_queue_size > 0)
-        door_glow_c = (255, 128, 48) if is_spawning else (248, 198, 88)
-        glow_alpha = int(180 + math.sin(elapsed * 8) * 60) if is_spawning else int(100 + math.sin(elapsed * 2.5 + territory.id) * 40)
-        
-        door_glow = pygame.Surface((20, 20), pygame.SRCALPHA)
-        pygame.draw.rect(door_glow, (*door_glow_c, glow_alpha), door_glow.get_rect(), border_radius=4)
-        self._screen.blit(door_glow, (x - 7, y + 2))
+        self._screen.blit(sprite, rect)
 
-        # Colored roof
-        roof_pts = [(x - 36, y - 4), (x + 42, y - 4), (x + 3, y - 26)]
-        roof_side = [(x + 42, y - 4), (x + 52, y - 12), (x + 3, y - 26)]
-        pygame.draw.polygon(self._screen, _darken(color, 8), roof_pts)
-        pygame.draw.polygon(self._screen, _darken(color, 28), roof_side)
-        # Roof shine
-        pygame.draw.polygon(self._screen, _brighten(color, 32), [(x - 36, y - 4), (x + 3, y - 26), (x - 12, y - 14)])
-        pygame.draw.polygon(self._screen, (62, 48, 28), roof_pts, 2)
+        if alive:
+            # A live cloth flag supplies the faction color without recoloring the artwork.
+            pole_x = x + 2
+            pole_top = rect.top - 19
+            pygame.draw.line(self._screen, (65, 52, 35), (pole_x, rect.top + 18), (pole_x, pole_top), 3)
+            wave = int(math.sin(elapsed * 3.2 + territory.id * 1.7) * 4)
+            flag = [(pole_x, pole_top), (pole_x + 29, pole_top + 6 + wave), (pole_x, pole_top + 17)]
+            pygame.draw.polygon(self._screen, _brighten(color, 24), flag)
+            pygame.draw.lines(self._screen, _darken(color, 28), True, flag, 2)
+            pygame.draw.circle(self._screen, (255, 232, 155), (pole_x + 12, pole_top + 8 + wave // 2), 3)
+        else:
+            for i in range(3):
+                phase = (elapsed * 0.18 + i * 0.3) % 1.0
+                sx = x - 14 + i * 13 + int(math.sin(elapsed + i) * 5)
+                sy = rect.top + 20 - int(phase * 42)
+                smoke = pygame.Surface((26, 26), pygame.SRCALPHA)
+                pygame.draw.circle(smoke, (48, 45, 40, int(70 * (1.0 - phase))), (13, 13), 5 + int(phase * 8))
+                self._screen.blit(smoke, (sx - 13, sy - 13))
 
-        # Turrets
-        for tx_off in [-30, 34]:
-            pygame.draw.rect(self._screen, (168, 132, 68), (x + tx_off - 4, y - 12, 10, 16), border_radius=2)
-            for j in range(3):
-                pygame.draw.rect(self._screen, (138, 102, 48), (x + tx_off - 3 + j * 4, y - 14, 3, 5))
+    def _draw_specialization_building(self, territory: Territory, elapsed: float) -> None:
+        specialization = territory.specialization
+        if specialization is TerritorySpecialization.NONE:
+            return
 
-        # Animated flag
-        pygame.draw.line(self._screen, (62, 48, 28), (x + 3, y - 26), (x + 3, y - 48), 2)
-        wave = int(math.sin(elapsed * 3.0 + territory.id) * 4)
-        flag = [(x + 3, y - 48), (x + 28, y - 40 + wave), (x + 3, y - 32)]
-        pygame.draw.polygon(self._screen, _brighten(color, 38), flag)
-        pygame.draw.polygon(self._screen, _darken(color, 14), flag, 2)
-        # Emblem
-        pygame.draw.circle(self._screen, (255, 238, 178), (x + 14, y - 40 + wave // 2), 3)
+        x, y = self._specialization_site_position(territory)
+        x, y = int(x), int(y)
+        level = territory.specialization_level
+        alive = getattr(territory.owner, "is_alive", False)
+        faction = territory.owner.color if alive else (92, 88, 78)
+
+        shadow = pygame.Surface((90, 34), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (5, 8, 5, 105), shadow.get_rect())
+        self._screen.blit(shadow, shadow.get_rect(center=(x, y + 17)))
+
+        if level == 0:
+            for i, offset in enumerate((-22, -8, 8, 23)):
+                height = 7 + (i % 2) * 6
+                pygame.draw.polygon(
+                    self._screen,
+                    (101, 92, 74),
+                    [(x + offset - 7, y + 12), (x + offset + 7, y + 12), (x + offset + 2, y + 12 - height)],
+                )
+            for i in range(2):
+                phase = (elapsed * 0.26 + i * 0.41) % 1.0
+                smoke = pygame.Surface((28, 30), pygame.SRCALPHA)
+                pygame.draw.circle(smoke, (59, 55, 49, int(80 * (1.0 - phase))), (14, 15), 5 + int(phase * 7))
+                self._screen.blit(smoke, (x - 17 + i * 16, y - 17 - int(phase * 20)))
+            return
+
+        if specialization is TerritorySpecialization.ECONOMY:
+            self._draw_economy_site((x, y), faction, level, elapsed)
+        elif specialization is TerritorySpecialization.BARRACKS:
+            self._draw_barracks_site((x, y), faction, level, elapsed)
+        else:
+            self._draw_fortress_site((x, y), faction, level, elapsed)
+
+    def _specialization_site_position(self, territory: Territory) -> tuple[int, int]:
+        """Find a stable dry site with ample separation from the capital."""
+        capital = _decor_point(territory, 7, 0.28)
+        candidates = _specialization_site_candidates(territory)
+        if not candidates:
+            return _decor_point(territory, 328, 0.62)
+
+        def capital_distance(point: tuple[float, float]) -> float:
+            return math.hypot(point[0] - capital[0], point[1] - capital[1])
+
+        def river_distance(point: tuple[float, float]) -> float:
+            return _nearest_river_distance(point, self._river_paths)
+
+        # Buildings are substantially wider than the river centre line.  A
+        # generous clearance prevents their foundation from touching water.
+        dry_candidates = [
+            point
+            for point in candidates
+            # Keep a small conversion margin because the final draw position
+            # is snapped to integer pixels.
+            if river_distance(point) >= RIVER_BUILDING_CLEARANCE + 2.0
+        ]
+        if dry_candidates:
+            best = max(dry_candidates, key=capital_distance)
+        else:
+            # Very narrow territories still pick the driest valid point first.
+            best = max(candidates, key=lambda point: (river_distance(point), capital_distance(point)))
+        return int(best[0]), int(best[1])
+
+    def _draw_economy_site(
+        self,
+        position: tuple[int, int],
+        faction: tuple[int, int, int],
+        level: int,
+        elapsed: float,
+    ) -> None:
+        x, y = position
+        soil = (111, 79, 39)
+        for row in range(3 + level):
+            yy = y + 7 + row * 5
+            pygame.draw.line(self._screen, _darken(soil, 18), (x - 39, yy), (x + 38, yy - 2), 2)
+            for col in range(5):
+                px = x - 30 + col * 15 + (row % 2) * 4
+                sway = int(math.sin(elapsed * 2.2 + row + col) * 2)
+                pygame.draw.line(self._screen, (85, 153, 67), (px, yy), (px + sway, yy - 7), 2)
+        roof = _brighten(faction, 12)
+        pygame.draw.rect(self._screen, (143, 104, 56), (x - 17, y - 23, 34, 28), border_radius=2)
+        pygame.draw.polygon(self._screen, roof, [(x - 23, y - 23), (x, y - 38), (x + 23, y - 23)])
+        pygame.draw.polygon(self._screen, _darken(roof, 28), [(x - 23, y - 23), (x, y - 38), (x + 23, y - 23)], 2)
+        pygame.draw.rect(self._screen, (69, 51, 34), (x - 4, y - 8, 8, 13))
+        for i in range(level):
+            coin_x = x + 26 + i * 8
+            coin_y = y - 11 - i * 3
+            pygame.draw.circle(self._screen, (243, 195, 67), (coin_x, coin_y), 4)
+            pygame.draw.circle(self._screen, (255, 231, 132), (coin_x - 1, coin_y - 1), 1)
+
+    def _draw_barracks_site(
+        self,
+        position: tuple[int, int],
+        faction: tuple[int, int, int],
+        level: int,
+        elapsed: float,
+    ) -> None:
+        x, y = position
+        tent_color = _brighten(faction, 6)
+        for i in range(1 + level):
+            tx = x - 25 + i * 25
+            pygame.draw.polygon(self._screen, (74, 64, 48), [(tx - 12, y + 12), (tx + 12, y + 12), (tx, y - 18)])
+            pygame.draw.polygon(self._screen, tent_color, [(tx - 12, y + 12), (tx, y - 18), (tx, y + 12)])
+            pygame.draw.line(self._screen, _darken(tent_color, 30), (tx, y - 18), (tx, y + 13), 1)
+        for i in range(2 + level):
+            px = x - 32 + i * 18
+            pygame.draw.line(self._screen, (154, 151, 139), (px, y + 13), (px + 8, y - 11), 2)
+            pygame.draw.line(self._screen, (154, 151, 139), (px + 8, y + 13), (px, y - 11), 2)
+        pole_x = x + 31
+        pygame.draw.line(self._screen, (74, 54, 33), (pole_x, y + 13), (pole_x, y - 35), 3)
+        wave = int(math.sin(elapsed * 4.0) * 4)
+        flag = [(pole_x, y - 34), (pole_x + 23, y - 28 + wave), (pole_x, y - 20)]
+        pygame.draw.polygon(self._screen, _brighten(faction, 25), flag)
+        pygame.draw.lines(self._screen, _darken(faction, 32), True, flag, 1)
+
+    def _draw_fortress_site(
+        self,
+        position: tuple[int, int],
+        faction: tuple[int, int, int],
+        level: int,
+        elapsed: float,
+    ) -> None:
+        x, y = position
+        stone = (133, 137, 130)
+        width = 48 + level * 12
+        pygame.draw.rect(self._screen, stone, (x - width // 2, y - 15, width, 29), border_radius=2)
+        pygame.draw.rect(self._screen, _darken(stone, 30), (x - width // 2, y + 6, width, 8))
+        for px in range(x - width // 2 + 4, x + width // 2 - 2, 10):
+            pygame.draw.rect(self._screen, _brighten(stone, 14), (px, y - 20, 6, 8))
+        for tx in (x - width // 2 + 7, x + width // 2 - 13):
+            pygame.draw.rect(self._screen, _darken(stone, 14), (tx, y - 29, 10, 42), border_radius=2)
+            pygame.draw.rect(self._screen, _brighten(stone, 10), (tx + 2, y - 33, 6, 7))
+        gate = pygame.Rect(x - 7, y - 2, 14, 16)
+        pygame.draw.rect(self._screen, (59, 46, 32), gate, border_radius=7)
+        for i in range(level):
+            glint_x = x - 14 + i * 28
+            glint_y = y - 25 + int(math.sin(elapsed * 2.0 + i) * 2)
+            pygame.draw.circle(self._screen, _brighten(faction, 40), (glint_x, glint_y), 3)
 
     def _draw_spawn_effects(self, territory: Territory) -> None:
         """Draw birth animation when units spawn from queen."""
@@ -377,34 +535,65 @@ class Renderer:
         for i in range(s_drawn):
             sprites.append(("soldier", i))
 
+        active_zone = next(
+            (z for z in getattr(match, "combat_zones", []) if z.territory is territory),
+            None,
+        )
         for role, index in sprites:
             key = f"{territory.id}:{role}:{index}"
-            
-            # If under attack, defenders converge on attackers!
-            active_zone = next((z for z in getattr(match, "combat_zones", []) if z.territory is territory), None)
-            
+
+            animation = "walk"
+            animation_phase = elapsed + index * 0.17 + territory.id * 0.31
+            impact = 0.0
+            hit_flash = 0.0
             if active_zone and role in ("soldier", "queen"):
                 atk_idx = index % max(1, active_zone.attacking_soldiers.count)
                 angle = atk_idx * 1.5 + elapsed * 0.5
-                target_pos = (active_zone.position[0] + math.cos(angle) * 35, active_zone.position[1] + math.sin(angle) * 35)
-                scale = 0.8
-                
-                # Add attack lunge animation for defenders
-                lunge = math.sin(elapsed * 10 + index * 1.3) * 6
-                target_pos = (target_pos[0] + math.cos(angle + math.pi) * max(0, lunge), target_pos[1] + math.sin(angle + math.pi) * max(0, lunge))
+                target_pos = (
+                    active_zone.position[0] + math.cos(angle) * 35,
+                    active_zone.position[1] + math.sin(angle) * 35,
+                )
+                scale = 0.95 if role == "queen" else 0.8
+                animation = "attack"
+                animation_phase = elapsed + index * 0.13 + territory.id * 0.07
+                hit_flash = active_zone.damage_flash * 0.72
             else:
                 target_pos, scale = _wandering_position(territory, role, index, elapsed)
-                
-            # Smooth interpolation to target
-            current = self._unit_positions.get(key, target_pos)
-            lerp_speed = 2.5
-            dt_approx = 1.0 / max(30, cfg.FPS)
-            nx = current[0] + (target_pos[0] - current[0]) * min(1.0, lerp_speed * dt_approx)
-            ny = current[1] + (target_pos[1] - current[1]) * min(1.0, lerp_speed * dt_approx)
-            self._unit_positions[key] = (nx, ny)
-            # Facing direction for animation
-            facing = 1 if target_pos[0] > current[0] else -1
-            self._draw_unit_sprite((int(nx), int(ny)), color, scale, role, elapsed + index * 0.7, facing)
+
+                if role == "worker":
+                    work_time = (elapsed + index * 1.13 + territory.id * 0.47) % 5.4
+                    if work_time < 1.08:
+                        animation = "work"
+                        animation_phase = work_time
+                        target_pos = self._unit_targets.get(key, target_pos)
+                    else:
+                        self._unit_targets[key] = target_pos
+
+            (nx, ny), speed, facing = self._smooth_unit_position(key, target_pos, 3.2)
+            draw_x, draw_y = nx, ny
+            if animation == "attack" and active_zone is not None:
+                lunge, impact = _attack_motion(animation_phase)
+                to_enemy_x = active_zone.position[0] - nx
+                to_enemy_y = active_zone.position[1] - ny
+                distance = max(1.0, math.hypot(to_enemy_x, to_enemy_y))
+                draw_x += to_enemy_x / distance * lunge
+                draw_y += to_enemy_y / distance * lunge * 0.55
+                if abs(to_enemy_x) > 0.5:
+                    facing = 1 if to_enemy_x > 0 else -1
+            elif animation != "work" and speed < 2.0:
+                animation = "idle"
+
+            self._draw_unit_sprite(
+                (int(draw_x), int(draw_y)),
+                color,
+                scale,
+                role,
+                animation_phase,
+                facing,
+                animation=animation,
+                hit_flash=hit_flash,
+                impact=impact,
+            )
 
         # Draw spawning units emerging from base building
         base_pos = _decor_point(territory, 7, 0.28)
@@ -420,7 +609,41 @@ class Renderer:
             ny = base_pos[1] + (target_pos[1] - base_pos[1]) * progress
             facing = 1 if target_pos[0] > base_pos[0] else -1
             
-            self._draw_unit_sprite((int(nx), int(ny)), color, scale, role, elapsed * 2.0, facing)
+            self._draw_unit_sprite(
+                (int(nx), int(ny)),
+                color,
+                scale,
+                role,
+                elapsed + index * 0.17,
+                facing,
+                animation="walk",
+            )
+
+    def _smooth_unit_position(
+        self,
+        key: str,
+        target: tuple[float, float],
+        responsiveness: float,
+    ) -> tuple[tuple[float, float], float, int]:
+        current = self._unit_positions.get(key)
+        if current is None:
+            self._unit_positions[key] = target
+            facing = self._unit_facing.setdefault(key, 1)
+            return target, 0.0, facing
+
+        alpha = 1.0 - math.exp(-responsiveness * self._frame_dt)
+        nx = current[0] + (target[0] - current[0]) * alpha
+        ny = current[1] + (target[1] - current[1]) * alpha
+        self._unit_positions[key] = (nx, ny)
+
+        dx = nx - current[0]
+        dy = ny - current[1]
+        speed = math.hypot(dx, dy) / max(self._frame_dt, 1e-6) if self._frame_dt > 0 else 0.0
+        facing = self._unit_facing.get(key, 1)
+        if abs(dx) > 0.04:
+            facing = 1 if dx > 0 else -1
+            self._unit_facing[key] = facing
+        return (nx, ny), speed, facing
 
     def _draw_army(self, army: object) -> None:
         pos = army.position
@@ -434,66 +657,71 @@ class Renderer:
         ny = dx / length
         color = army.attacker.color
 
-        # Glowing trail
-        trail_surf = pygame.Surface((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT), pygame.SRCALPHA)
-        trail_color = (*_brighten(color, 52), 60)
-        pygame.draw.line(trail_surf, trail_color, start, end, 6)
-        self._screen.blit(trail_surf, (0, 0))
-        pygame.draw.line(self._screen, _brighten(color, 28), start, end, 2)
-
-        # March dust particles
+        # Dust follows the formation only; the route itself is never drawn.
+        ux, uy = dx / length, dy / length
         for i in range(8):
-            t = (army.progress - i * 0.03) % 1.0
-            if t < 0:
-                continue
-            dot = (int(start[0] + dx * t), int(start[1] + dy * t))
-            dot_r = 2 + int(math.sin(army.elapsed * 6 + i) * 1)
-            dust_alpha = int(80 * (1.0 - abs(t - army.progress) * 8))
-            if dust_alpha > 0:
-                dust = pygame.Surface((dot_r * 2 + 4, dot_r * 2 + 4), pygame.SRCALPHA)
-                pygame.draw.circle(dust, (*_brighten(color, 48), max(0, min(255, dust_alpha))), (dot_r + 2, dot_r + 2), dot_r)
-                self._screen.blit(dust, (dot[0] - dot_r - 2, dot[1] - dot_r - 2))
+            back = 14 + i * 8
+            spread = math.sin(army.elapsed * 5 + i * 2.1) * 10
+            dot = (int(current[0] - ux * back + nx * spread), int(current[1] - uy * back + ny * spread))
+            dot_r = 3 + (i % 3)
+            dust = pygame.Surface((dot_r * 4, dot_r * 4), pygame.SRCALPHA)
+            alpha = max(12, 68 - i * 7)
+            pygame.draw.circle(dust, (198, 174, 123, alpha), (dot_r * 2, dot_r * 2), dot_r)
+            self._screen.blit(dust, dust.get_rect(center=dot))
 
         # Marching soldiers with formation
         facing = 1 if dx >= 0 else -1
         visible = max(3, min(9, army.soldiers // 3 + 3))
         for i in range(visible):
             row = i - (visible - 1) / 2
-            wave = math.sin(army.elapsed * 7 + i * 1.1) * 3
+            wave = math.sin(army.elapsed * 9 + i * 1.1) * 1.5
             back = (i % 3) * 12
             sprite_pos = (
                 int(current[0] + nx * row * 12 - dx / length * back),
                 int(current[1] + ny * row * 12 - dy / length * back + wave),
             )
             scale = 1.0 if i == 0 else 0.85
-            self._draw_unit_sprite(sprite_pos, color, scale, "soldier", army.elapsed + i, facing)
+            self._draw_unit_sprite(
+                sprite_pos,
+                color,
+                scale,
+                "soldier",
+                army.elapsed + i * 0.09,
+                facing,
+                animation="walk",
+            )
 
-        # Count badge
-        badge_surf = self._tiny.render(str(army.soldiers), True, (255, 255, 255))
-        badge_rect = badge_surf.get_rect(center=(current[0], current[1] - 20))
-        bg = badge_rect.inflate(10, 4)
-        pill_surf = pygame.Surface((bg.width, bg.height), pygame.SRCALPHA)
-        pygame.draw.rect(pill_surf, (*color, 200), pill_surf.get_rect(), border_radius=8)
-        self._screen.blit(pill_surf, bg)
-        pygame.draw.rect(self._screen, (248, 238, 218), bg, 1, border_radius=8)
-        self._screen.blit(badge_surf, badge_rect)
+        # Formation size is communicated by visible soldiers rather than a number badge.
 
     def _draw_combat_zone(self, zone: object, elapsed: float) -> None:
         pos = zone.position
         cx, cy = int(pos[0]), int(pos[1])
         t = zone.elapsed
 
-        # Pulsing danger area
-        ring_r = int(48 + math.sin(t * 4.5) * 10)
-        ring_surf = pygame.Surface((ring_r * 2 + 30, ring_r * 2 + 30), pygame.SRCALPHA)
-        rc = ring_surf.get_rect().center
-        alpha_base = int(128 + math.sin(t * 6) * 50)
-        pygame.draw.circle(ring_surf, (228, 48, 38, max(0, min(255, alpha_base // 3))), rc, ring_r, 4)
-        pygame.draw.circle(ring_surf, (255, 148, 38, max(0, min(255, alpha_base // 4))), rc, ring_r + 8, 2)
-        self._screen.blit(ring_surf, ring_surf.get_rect(center=(cx, cy)))
+        # Scorched ground, rolling smoke, embers and intermittent fire flashes.
+        scorch = pygame.Surface((142, 88), pygame.SRCALPHA)
+        pygame.draw.ellipse(scorch, (32, 23, 15, 82), scorch.get_rect())
+        pygame.draw.ellipse(scorch, (83, 47, 18, 42), scorch.get_rect().inflate(-24, -18), 3)
+        self._screen.blit(scorch, scorch.get_rect(center=(cx, cy + 10)))
+
+        smoke_layer = pygame.Surface((180, 150), pygame.SRCALPHA)
+        local_cx, local_cy = smoke_layer.get_rect().center
+        for i in range(12):
+            life = (t * (0.32 + (i % 3) * 0.08) + i * 0.137) % 1.0
+            angle = i * 2.399 + math.sin(t * 0.7 + i) * 0.5
+            distance = 12 + (i % 5) * 7 + life * 22
+            px = local_cx + int(math.cos(angle) * distance)
+            py = local_cy + int(math.sin(angle) * distance * 0.42 - life * 38)
+            radius = 7 + int(life * 15) + i % 4
+            alpha = int(175 * (1.0 - life))
+            smoke_color = (49 + i % 3 * 8, 51 + i % 2 * 6, 47, alpha)
+            pygame.draw.circle(smoke_layer, smoke_color, (px, py), radius)
+            if i % 3 == 0:
+                pygame.draw.circle(smoke_layer, (255, 116, 35, int(178 * (1.0 - life))), (px, py + radius // 2), max(2, radius // 4))
+        self._screen.blit(smoke_layer, smoke_layer.get_rect(center=(cx, cy - 6)))
 
         # Individual attackers spreading out to fight
-        atk_count = zone.attacking_soldiers.count
+        atk_count = min(12, zone.attacking_soldiers.count)
 
         for i in range(atk_count):
             key = f"atk_{zone.territory.id}_{id(zone)}_{i}"
@@ -501,34 +729,32 @@ class Renderer:
             dist = 30 + math.sin(i * 45) * 10
             target_x = cx + int(math.cos(angle) * dist)
             target_y = cy + int(math.sin(angle) * dist)
-            
-            # Start them slightly off-center when they arrive
-            current = self._unit_positions.get(key, (cx + math.cos(angle)*100, cy + math.sin(angle)*100))
-            
-            lerp_speed = 3.5
-            dt_approx = 1.0 / max(30, cfg.FPS)
-            nx = current[0] + (target_x - current[0]) * min(1.0, lerp_speed * dt_approx)
-            ny = current[1] + (target_y - current[1]) * min(1.0, lerp_speed * dt_approx)
-            self._unit_positions[key] = (nx, ny)
 
-            # Attack animation: lunge forward
-            lunge = math.sin(t * 12 + i * 2.3) * 6
-            ax = nx + int(math.cos(angle + math.pi) * max(0, lunge))
-            ay = ny + int(math.sin(angle + math.pi) * max(0, lunge))
-            
-            facing = 1 if math.cos(angle + math.pi) > 0 else -1
-            self._draw_unit_sprite((int(ax), int(ay)), zone.attacker_color, 0.8, "soldier", t + i, facing)
-            
-            # Weapon swing arc
-            if lunge > 3:
-                swing_angle = angle + math.pi + math.sin(t * 15 + i) * 0.5
-                sw_x = ax + int(math.cos(swing_angle) * 14)
-                sw_y = ay + int(math.sin(swing_angle) * 14)
-                pygame.draw.line(self._screen, (248, 228, 168), (ax, ay - 4), (sw_x, sw_y - 4), 2)
-                # Impact spark
-                spark = pygame.Surface((12, 12), pygame.SRCALPHA)
-                pygame.draw.circle(spark, (255, 228, 88, 180), (6, 6), 4)
-                self._screen.blit(spark, (sw_x - 6, sw_y - 10))
+            if key not in self._unit_positions:
+                self._unit_positions[key] = (
+                    cx + math.cos(angle) * 100,
+                    cy + math.sin(angle) * 100,
+                )
+            (nx, ny), _, _ = self._smooth_unit_position(key, (target_x, target_y), 4.8)
+
+            attack_phase = t + i * 0.13
+            lunge, impact = _attack_motion(attack_phase)
+            inward_x = math.cos(angle + math.pi)
+            inward_y = math.sin(angle + math.pi)
+            ax = nx + inward_x * lunge
+            ay = ny + inward_y * lunge * 0.55
+            facing = 1 if inward_x > 0 else -1
+            self._draw_unit_sprite(
+                (int(ax), int(ay)),
+                zone.attacker_color,
+                0.8,
+                "soldier",
+                attack_phase,
+                facing,
+                animation="attack",
+                hit_flash=zone.damage_flash * 0.34,
+                impact=impact,
+            )
 
         # Damage flash: shockwave + particles
         if zone.damage_flash > 0:
@@ -550,22 +776,22 @@ class Renderer:
                 pygame.draw.circle(psf, (*pc, max(0, min(255, int(zone.damage_flash * 220)))), (r + 1, r + 1), r)
                 self._screen.blit(psf, (px - r - 1, py - r - 1))
 
-        # Battle info badge
-        atk_total = zone.attacking_soldiers.count
-        def_total = zone.territory.soldiers.count + zone.territory.workers.count + (1 if zone.territory.queen.is_alive else 0)
-        battle_text = f"{atk_total} ⚔ {def_total}"
-        battle_surf = self._bold_small.render(battle_text, True, (255, 248, 218))
-        battle_rect = battle_surf.get_rect(center=(cx, cy - 42))
-        bg = battle_rect.inflate(14, 6)
-        bg_surf = pygame.Surface((bg.width, bg.height), pygame.SRCALPHA)
-        pygame.draw.rect(bg_surf, (32, 14, 8, 200), bg_surf.get_rect(), border_radius=8)
-        self._screen.blit(bg_surf, bg)
-        self._screen.blit(battle_surf, battle_rect)
+        # Crossed steel marker, with no numeric overlay obscuring the fight.
+        icon_y = cy - 58
+        pygame.draw.line(self._screen, (248, 225, 170), (cx - 8, icon_y - 7), (cx + 8, icon_y + 7), 3)
+        pygame.draw.line(self._screen, (248, 225, 170), (cx + 8, icon_y - 7), (cx - 8, icon_y + 7), 3)
+        pygame.draw.circle(self._screen, (255, 151, 46), (cx, icon_y), 3)
 
     def _get_cached_sprite(self, role: str, color: tuple[int, int, int], scale: float) -> pygame.Surface:
         key = f"humanoid_{role}_{color[0]}_{color[1]}_{color[2]}_{scale:.2f}"
         if key in self._sprite_cache:
             return self._sprite_cache[key]
+
+        base_height = {"queen": 76, "worker": 58, "soldier": 56}.get(role, 56)
+        painted = self._art.sprite(role, round(base_height * scale))
+        if painted is not None:
+            self._sprite_cache[key] = painted
+            return painted
         
         base_r = max(6, int((12 if role == "queen" else 8) * scale))
         surf = pygame.Surface((base_r * 6, base_r * 6), pygame.SRCALPHA)
@@ -643,51 +869,138 @@ class Renderer:
         self._sprite_cache[key] = surf
         return surf
 
-    def _draw_supply_drop(self, drop: SupplyDrop, elapsed: float) -> None:
-        cx, cy = drop.centroid
-        
-        # Draw shadow
-        shadow = pygame.Surface((60, 40), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow, (0, 0, 0, 100), shadow.get_rect())
-        self._screen.blit(shadow, (cx - 30, cy + 10))
-        
-        # Parachute if still falling (elapsed < delay)
-        falling = drop.elapsed < cfg.SUPPLY_DROP_DELAY
-        z_off = 0
-        if falling:
-            progress = drop.elapsed / cfg.SUPPLY_DROP_DELAY
-            z_off = int((1.0 - progress) * 300)
-            # Draw parachute
-            para_y = cy - z_off - 60
-            pygame.draw.ellipse(self._screen, (220, 220, 230), (cx - 40, para_y, 80, 40))
-            pygame.draw.line(self._screen, (200, 200, 200), (cx - 40, para_y + 20), (cx - 15, cy - z_off - 10), 1)
-            pygame.draw.line(self._screen, (200, 200, 200), (cx + 40, para_y + 20), (cx + 15, cy - z_off - 10), 1)
-        
-        # Draw Box (Pseudo-3D cube)
-        bx, by = int(cx), int(cy - z_off)
-        size = 30
-        c_top = (100, 160, 220)
-        c_left = (60, 110, 160)
-        c_right = (40, 80, 120)
-        
-        # Right face
-        pygame.draw.polygon(self._screen, c_right, [(bx, by), (bx + size, by - size//2), (bx + size, by + size//2), (bx, by + size)])
-        # Left face
-        pygame.draw.polygon(self._screen, c_left, [(bx, by), (bx - size, by - size//2), (bx - size, by + size//2), (bx, by + size)])
-        # Top face
-        pygame.draw.polygon(self._screen, c_top, [(bx, by), (bx + size, by - size//2), (bx, by - size), (bx - size, by - size//2)])
-        
-        # Medical cross
-        pygame.draw.rect(self._screen, (255, 50, 50), (bx - 12, by + 2, 8, 16))
-        pygame.draw.rect(self._screen, (255, 50, 50), (bx - 16, by + 6, 16, 8))
+    def _draw_world_objective(
+        self,
+        objective: WorldObjective,
+        elapsed: float,
+        countdown: float,
+    ) -> None:
+        cx, cy = map(int, objective.centroid)
+        state = objective.state
+        pulse = 0.5 + 0.5 * math.sin(elapsed * 4.2)
 
-        if not falling:
-            # Glow when active
-            glow = pygame.Surface((80, 80), pygame.SRCALPHA)
-            pulse = int(128 + math.sin(elapsed * 5) * 60)
-            pygame.draw.circle(glow, (100, 200, 255, pulse // 3), (40, 40), 30)
-            pygame.draw.circle(glow, (100, 200, 255, pulse // 2), (40, 40), 20)
-            self._screen.blit(glow, (bx - 40, by - 40))
+        ring = pygame.Surface((180, 180), pygame.SRCALPHA)
+        ring_center = ring.get_rect().center
+        ring_color = (244, 197, 81) if state is WorldObjectiveState.TELEGRAPHING else (111, 211, 171)
+        radius = 46 + int(pulse * 8)
+        pygame.draw.circle(ring, (*ring_color, 28), ring_center, radius + 16)
+        pygame.draw.circle(ring, (*ring_color, 150), ring_center, radius, 2)
+        for i in range(12):
+            angle = elapsed * 0.7 + i * math.tau / 12
+            px = ring_center[0] + int(math.cos(angle) * (radius + 8))
+            py = ring_center[1] + int(math.sin(angle) * (radius + 8))
+            pygame.draw.circle(ring, (*ring_color, 170), (px, py), 2)
+        self._screen.blit(ring, ring.get_rect(center=(cx, cy)))
+
+        shadow = pygame.Surface((116, 42), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (4, 7, 5, 115), shadow.get_rect())
+        self._screen.blit(shadow, shadow.get_rect(center=(cx, cy + 23)))
+
+        alpha = 115 if state is WorldObjectiveState.TELEGRAPHING else 255
+        landmark = pygame.Surface((120, 105), pygame.SRCALPHA)
+        local = landmark.get_rect().center
+        if objective.objective_type is WorldObjectiveType.CARAVAN:
+            self._draw_caravan_objective(landmark, local, alpha, elapsed)
+        elif objective.objective_type is WorldObjectiveType.WAR_BANNER:
+            self._draw_banner_objective(landmark, local, alpha, elapsed)
+        else:
+            self._draw_shrine_objective(landmark, local, alpha, elapsed)
+        self._screen.blit(landmark, landmark.get_rect(center=(cx, cy - 6)))
+
+        if objective.active:
+            for i in range(min(3, objective.soldiers.count)):
+                angle = elapsed * 0.5 + i * math.tau / 3
+                gx = cx + int(math.cos(angle) * 42)
+                gy = cy + int(math.sin(angle) * 19) + 10
+                self._draw_unit_sprite(
+                    (gx, gy),
+                    (136, 126, 105),
+                    0.54,
+                    "soldier",
+                    elapsed + i * 0.3,
+                    1 if math.cos(angle) >= 0 else -1,
+                    animation="idle",
+                )
+            if objective.queen.is_alive:
+                hp_w = 56
+                hp = max(0.0, objective.core_hp)
+                fill = max(1, int(hp_w * hp / objective.core_max_hp))
+                hp_rect = pygame.Rect(cx - hp_w // 2, cy + 49, hp_w, 5)
+                pygame.draw.rect(self._screen, (39, 24, 20), hp_rect, border_radius=2)
+                pygame.draw.rect(self._screen, (226, 157, 61), (hp_rect.x, hp_rect.y, fill, hp_rect.height), border_radius=2)
+                pygame.draw.rect(self._screen, (247, 225, 171), hp_rect, 1, border_radius=2)
+
+        if state is WorldObjectiveState.TELEGRAPHING:
+            status = f"{objective.display_name.upper()} IN {math.ceil(countdown)}"
+            status_color = (255, 214, 105)
+        elif objective.active:
+            status = f"{objective.display_name.upper()} {math.ceil(countdown)}s"
+            status_color = (222, 244, 201)
+        elif state is WorldObjectiveState.RESOLVED:
+            status = "OBJECTIVE CLAIMED"
+            status_color = (255, 218, 101)
+        else:
+            status = "OBJECTIVE EXPIRED"
+            status_color = (177, 176, 160)
+        text = self._bold_small.render(status, True, status_color)
+        label = pygame.Rect(cx - max(66, text.get_width() // 2 + 10), cy - 82, max(132, text.get_width() + 20), 21)
+        _draw_popup_bg(self._screen, label, ring_color, radius=5)
+        self._screen.blit(text, text.get_rect(center=label.center))
+
+    def _draw_caravan_objective(
+        self,
+        surface: pygame.Surface,
+        center: tuple[int, int],
+        alpha: int,
+        elapsed: float,
+    ) -> None:
+        x, y = center
+        wood = (145, 89, 42, alpha)
+        pygame.draw.rect(surface, wood, (x - 34, y - 4, 56, 26), border_radius=3)
+        pygame.draw.polygon(surface, (184, 118, 56, alpha), [(x - 39, y - 4), (x - 7, y - 29), (x + 28, y - 4)])
+        pygame.draw.rect(surface, (247, 201, 73, alpha), (x - 5, y - 22, 17, 17), border_radius=2)
+        for wx in (x - 22, x + 13):
+            pygame.draw.circle(surface, (54, 43, 31, alpha), (wx, y + 24), 10)
+            pygame.draw.circle(surface, (190, 149, 83, alpha), (wx, y + 24), 4)
+        sparkle = int(math.sin(elapsed * 6) * 2)
+        pygame.draw.circle(surface, (255, 237, 146, alpha), (x + 26, y - 20 + sparkle), 3)
+
+    def _draw_banner_objective(
+        self,
+        surface: pygame.Surface,
+        center: tuple[int, int],
+        alpha: int,
+        elapsed: float,
+    ) -> None:
+        x, y = center
+        pygame.draw.line(surface, (93, 63, 36, alpha), (x - 3, y + 29), (x - 3, y - 44), 4)
+        wave = int(math.sin(elapsed * 5.0) * 7)
+        flag = [(x - 1, y - 41), (x + 39, y - 30 + wave), (x - 1, y - 12)]
+        pygame.draw.polygon(surface, (195, 73, 59, alpha), flag)
+        pygame.draw.lines(surface, (255, 210, 119, alpha), True, flag, 2)
+        pygame.draw.circle(surface, (255, 213, 99, alpha), (x - 3, y - 48), 4)
+        for i in range(4):
+            phase = (elapsed * 0.9 + i * 0.24) % 1.0
+            sx = x - 25 + i * 16
+            sy = y + 27 - int(phase * 18)
+            pygame.draw.circle(surface, (247, 159, 55, int(alpha * (1.0 - phase))), (sx, sy), 2 + i % 2)
+
+    def _draw_shrine_objective(
+        self,
+        surface: pygame.Surface,
+        center: tuple[int, int],
+        alpha: int,
+        elapsed: float,
+    ) -> None:
+        x, y = center
+        glow = pygame.Surface((80, 80), pygame.SRCALPHA)
+        pygame.draw.circle(glow, (104, 202, 212, int(alpha * 0.18)), glow.get_rect().center, 28 + int(math.sin(elapsed * 3) * 4))
+        surface.blit(glow, glow.get_rect(center=(x, y - 3)))
+        for ox, height in ((-24, 34), (0, 48), (24, 34)):
+            pygame.draw.polygon(surface, (108, 121, 126, alpha), [(x + ox - 8, y + 25), (x + ox + 8, y + 25), (x + ox + 5, y + 25 - height), (x + ox - 4, y + 22 - height)])
+            pygame.draw.line(surface, (173, 209, 202, alpha), (x + ox - 1, y + 16), (x + ox + 3, y + 5), 2)
+        pygame.draw.circle(surface, (116, 232, 221, alpha), (x, y - 4), 8)
+        pygame.draw.circle(surface, (235, 255, 217, alpha), (x - 2, y - 6), 2)
 
     def _draw_unit_sprite(
         self,
@@ -697,24 +1010,152 @@ class Renderer:
         role: str,
         phase: float,
         facing: int = 1,
+        *,
+        animation: str = "idle",
+        hit_flash: float = 0.0,
+        impact: float = 0.0,
     ) -> None:
-        surf = self._get_cached_sprite(role, color, scale)
-        # width = base_r * 6
-        w = surf.get_width()
+        base_height = {"queen": 76, "worker": 58, "soldier": 56}.get(role, 56)
+        target_height = max(8, round(base_height * scale))
+        frame_count = self._art.animation_count(role, animation)
+        frame_index = _animation_frame_index(role, animation, phase, frame_count)
+        surf = self._art.animation_frame(role, animation, frame_index, target_height)
+        if surf is None:
+            surf = self._get_cached_sprite(role, color, scale)
+            frame_index = 0
+
         x, y = center
-        bob = int(math.sin(phase * 6.0) * 3) if role != "queen" else int(math.sin(phase * 3.0) * 2)
-        
-        # Directional flip (if facing right, we mirror it)
+        if animation == "work" and impact <= 0.0:
+            impact = _work_impact(phase)
+
+        if animation == "walk":
+            stride = phase * math.tau / 0.48
+            bob = -abs(math.sin(stride)) * (1.3 if role == "queen" else 2.1)
+            lean = math.sin(stride) * 1.4 * facing
+        elif animation == "attack":
+            bob = -impact * 2.2
+            lean = (-2.0 + impact * 6.5) * facing
+        elif animation == "work":
+            bob = -impact * 1.2
+            lean = (1.0 - impact * 5.0) * facing
+        else:
+            bob = math.sin(phase * 2.4 + len(role)) * (0.8 if role == "queen" else 0.55)
+            lean = math.sin(phase * 1.7 + len(role)) * 0.45
+
+        base_w = max(18, int((32 if role == "queen" else 26) * scale))
+        base_h = max(7, int(base_w * 0.38))
+        marker_key = f"marker_{role}_{color}_{scale:.2f}"
+        marker = self._sprite_cache.get(marker_key)
+        if marker is None:
+            marker = pygame.Surface((base_w + 12, base_h + 8), pygame.SRCALPHA)
+            pygame.draw.ellipse(marker, (2, 6, 3, 115), marker.get_rect())
+            inner = marker.get_rect().inflate(-6, -4)
+            pygame.draw.ellipse(marker, (*_darken(color, 28), 190), inner)
+            pygame.draw.ellipse(marker, (*_brighten(color, 54), 235), inner, 2)
+            self._sprite_cache[marker_key] = marker
+        self._screen.blit(marker, marker.get_rect(center=(x, y + 10)))
+
+        self._draw_unit_action_fx((x, y), role, animation, facing, impact, phase, foreground=False)
+
         if facing > 0:
-            surf = pygame.transform.flip(surf, True, False)
-            
-        self._screen.blit(surf, (x - w // 2, y - w // 2 + bob))
-        
-        # Health bar (optional, drawn on top)
-        if role == "queen":
-            hp_w = 20
-            pygame.draw.rect(self._screen, (40, 0, 0), (x - hp_w//2, y - w // 2 - 4, hp_w, 4))
-            pygame.draw.rect(self._screen, (0, 200, 50), (x - hp_w//2, y - w // 2 - 4, hp_w, 4))
+            flip_key = f"flip_{role}_{animation}_{frame_index}_{color}_{target_height}"
+            flipped = self._sprite_cache.get(flip_key)
+            if flipped is None:
+                flipped = pygame.transform.flip(surf, True, False)
+                self._sprite_cache[flip_key] = flipped
+            surf = flipped
+
+        lean_step = int(round(lean))
+        if lean_step:
+            lean_key = f"lean_{role}_{animation}_{frame_index}_{color}_{target_height}_{facing}_{lean_step}"
+            leaned = self._sprite_cache.get(lean_key)
+            if leaned is None:
+                leaned = pygame.transform.rotate(surf, lean_step)
+                self._sprite_cache[lean_key] = leaned
+            surf = leaned
+
+        render_surf = surf
+        if hit_flash > 0.02:
+            render_surf = surf.copy()
+            flash = max(0, min(180, int(hit_flash * 180)))
+            render_surf.fill((flash, flash, flash, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+        rect = render_surf.get_rect(midbottom=(x, round(y + 12 + bob)))
+        self._screen.blit(render_surf, rect)
+        self._draw_unit_action_fx((x, y), role, animation, facing, impact, phase, foreground=True)
+
+        # Tiny heraldic marker makes team ownership legible in crowded fights.
+        marker_y = rect.top + 4
+        crest = [(x, marker_y), (x + 5, marker_y + 6), (x, marker_y + 12), (x - 5, marker_y + 6)]
+        pygame.draw.polygon(self._screen, _brighten(color, 36), crest)
+        pygame.draw.lines(self._screen, (255, 241, 199), True, crest, 1)
+
+    def _draw_unit_action_fx(
+        self,
+        center: tuple[int, int],
+        role: str,
+        animation: str,
+        facing: int,
+        impact: float,
+        phase: float,
+        *,
+        foreground: bool,
+    ) -> None:
+        if impact < 0.025:
+            return
+        x, y = center
+        alpha = max(0, min(255, int(impact * 255)))
+
+        if role == "queen" and animation == "attack":
+            if not foreground:
+                aura = pygame.Surface((72, 62), pygame.SRCALPHA)
+                radius = 20 + int(impact * 10)
+                pygame.draw.circle(aura, (72, 194, 255, alpha // 4), (36, 35), radius)
+                pygame.draw.circle(aura, (242, 220, 120, alpha), (36, 35), radius, 2)
+                pygame.draw.circle(aura, (122, 224, 255, alpha), (36, 35), max(5, radius - 8), 1)
+                self._screen.blit(aura, aura.get_rect(center=(x, y - 18)))
+            else:
+                orb_x = x + facing * 18
+                orb_y = y - 38
+                pygame.draw.circle(self._screen, (255, 247, 190), (orb_x, orb_y), 2 + int(impact * 3))
+                for i in range(4):
+                    angle = phase * 8.0 + i * math.tau / 4
+                    end = (
+                        orb_x + int(math.cos(angle) * (6 + impact * 7)),
+                        orb_y + int(math.sin(angle) * (6 + impact * 7)),
+                    )
+                    pygame.draw.line(self._screen, (112, 216, 255), (orb_x, orb_y), end, 1)
+            return
+
+        if role == "worker" and animation == "work":
+            if foreground:
+                return
+            dust = pygame.Surface((54, 30), pygame.SRCALPHA)
+            for i in range(6):
+                px = 11 + i * 7 + int(math.sin(phase * 11 + i) * 3)
+                py = 18 - (i % 3) * 3
+                radius = 2 + i % 2
+                pygame.draw.circle(dust, (204, 174, 112, alpha // (2 + i % 2)), (px, py), radius)
+            self._screen.blit(dust, dust.get_rect(center=(x + facing * 9, y + 8)))
+            return
+
+        if role == "soldier" and animation == "attack" and foreground:
+            slash = pygame.Surface((54, 48), pygame.SRCALPHA)
+            if facing > 0:
+                points = [(12, 10), (32, 15), (44, 32)]
+            else:
+                points = [(42, 10), (22, 15), (10, 32)]
+            pygame.draw.lines(slash, (255, 244, 205, alpha // 3), False, points, 6)
+            pygame.draw.lines(slash, (255, 226, 132, alpha), False, points, 2)
+            impact_point = points[-1]
+            for i in range(5):
+                angle = -1.2 + i * 0.6
+                spark_end = (
+                    impact_point[0] + int(math.cos(angle) * (4 + impact * 8)),
+                    impact_point[1] + int(math.sin(angle) * (4 + impact * 8)),
+                )
+                pygame.draw.line(slash, (255, 188, 62, alpha), impact_point, spark_end, 1)
+            self._screen.blit(slash, slash.get_rect(center=(x + facing * 10, y - 16)))
 
     def _draw_combat_effect(self, effect: object) -> None:
         p = effect.progress
@@ -756,15 +1197,31 @@ class Renderer:
         home = match.home_territory(player)
         if home is None:
             return
-
-        cx, cy = home.centroid
-        cx, cy = int(cx), int(cy)
         keys = KEY_LABELS[player_idx]
         state = state_info["state"]
         color = player.color
 
+        anchor = home
+        if state == "summon":
+            territory_ids = state_info.get("summon_territories", [])
+            selected = state_info.get("summon_index", 0)
+            if territory_ids:
+                territory_id = territory_ids[min(selected, len(territory_ids) - 1)]
+                if 0 <= territory_id < len(match.territories):
+                    anchor = match.territories[territory_id]
+        elif state == "development":
+            territory_ids = state_info.get("development_territories", [])
+            selected = state_info.get("development_index", 0)
+            if territory_ids:
+                territory_id = territory_ids[min(selected, len(territory_ids) - 1)]
+                if 0 <= territory_id < len(match.territories):
+                    anchor = match.territories[territory_id]
+        cx, cy = anchor.centroid
+        cx, cy = int(cx), int(cy)
+
         # Popup background
-        popup_w, popup_h = 180, 82
+        popup_w = 228 if state in ("summon", "strategy", "development") else 180
+        popup_h = 116 if state == "development" else 104 if state == "summon" else 90 if state == "strategy" else 82
         popup_rect = pygame.Rect(cx - popup_w // 2, cy - 50 - popup_h, popup_w, popup_h)
         # Clamp to screen
         popup_rect.clamp_ip(pygame.Rect(5, 5, cfg.WINDOW_WIDTH - 10, cfg.WINDOW_HEIGHT - 10))
@@ -779,13 +1236,33 @@ class Renderer:
         y0 = popup_rect.y + 8
 
         if state == "summon":
-            header = self._tiny.render("SUMMON UNIT", True, cfg.ACCENT_2)
+            territory_ids = state_info.get("summon_territories", [])
+            selected = state_info.get("summon_index", 0)
+            territory = home
+            if territory_ids:
+                territory_id = territory_ids[min(selected, len(territory_ids) - 1)]
+                if 0 <= territory_id < len(match.territories):
+                    territory = match.territories[territory_id]
+
+            choices = ("soldier", "worker", None)
+            choice_index = state_info.get("summon_choice", 0)
+            choice = choices[min(max(0, choice_index), len(choices) - 1)]
+            header = self._tiny.render(f"RECRUIT T{territory.id + 1}  {int(territory.food)}g", True, cfg.ACCENT_2)
             self._screen.blit(header, (x0, y0))
-            cost_s = f"({cfg.SOLDIER_COST}g)"
-            cost_w = f"({home.worker_cost()}g)"
-            self._draw_key_option(x0, y0 + 16, keys[0], f"Soldier {cost_s}", (218, 128, 68))
-            self._draw_key_option(x0, y0 + 34, keys[1], f"Worker {cost_w}", (88, 168, 98))
-            self._draw_key_option(x0, y0 + 52, keys[2], "Cancel", cfg.MUTED_TEXT)
+            self._draw_key_option(x0, y0 + 18, keys[0], f"Region T{territory.id + 1}", (161, 203, 231))
+            if choice == "soldier":
+                self._draw_key_option(x0, y0 + 37, keys[1], f"Soldier ({territory.soldier_cost}g)", (218, 128, 68))
+                self._draw_key_option(x0, y0 + 56, keys[2], "Confirm", (244, 205, 98))
+            elif choice == "worker":
+                self._draw_key_option(x0, y0 + 37, keys[1], f"Worker ({territory.worker_cost()}g)", (88, 168, 98))
+                self._draw_key_option(x0, y0 + 56, keys[2], "Confirm", (244, 205, 98))
+            else:
+                self._draw_key_option(x0, y0 + 37, keys[1], "Cancel", cfg.MUTED_TEXT)
+                self._draw_key_option(x0, y0 + 56, keys[2], "Back", cfg.MUTED_TEXT)
+            message = state_info.get("message", "")
+            if message:
+                message_surf = self._tiny.render(_fit_text(self._tiny, message, popup_w - 20), True, (238, 137, 97))
+                self._screen.blit(message_surf, (x0, y0 + 75))
 
         elif state == "attack_target":
             header = self._tiny.render("SELECT TARGET", True, (218, 68, 58))
@@ -813,15 +1290,78 @@ class Renderer:
             self._draw_key_option(x0 + 120, y0 + 16, keys[2], "ALL", (218, 68, 48))
             target = state_info.get("target")
             if target:
-                action = "Reinforce" if getattr(target, "owner", None) is player else "Attack"
-                target_name = f"T{target.id+1} ({getattr(target.owner, 'name', 'Unknown')})"
+                if isinstance(target, WorldObjective):
+                    action = "Claim"
+                    target_name = target.display_name
+                else:
+                    action = "Reinforce" if getattr(target, "owner", None) is player else "Attack"
+                    target_name = f"T{target.id+1} ({getattr(target.owner, 'name', 'Unknown')})"
                 tgt_name = _fit_text(self._tiny, target_name, 110)
                 tgt_text = self._tiny.render(f"{action} → {tgt_name}", True, cfg.TEXT)
                 self._screen.blit(tgt_text, (x0, y0 + 40))
-                # Show source soldiers count
                 total_soldiers = sum(t.soldiers.count for t in match.territories_of(player) if t is not target)
-                src_text = self._tiny.render(f"Available: {total_soldiers} soldiers", True, cfg.MUTED_TEXT)
-                self._screen.blit(src_text, (x0, y0 + 56))
+                for i in range(min(12, total_soldiers)):
+                    dot_x = x0 + 5 + (i % 12) * 11
+                    dot_y = y0 + 62
+                    pygame.draw.circle(self._screen, _darken(player.color, 25), (dot_x, dot_y), 4)
+                    pygame.draw.circle(self._screen, _brighten(player.color, 42), (dot_x, dot_y), 4, 1)
+
+        elif state == "strategy":
+            header = self._tiny.render("STRATEGY", True, (163, 223, 190))
+            self._screen.blit(header, (x0, y0))
+            objective = match.world_objective
+            if objective is not None and objective.active:
+                objective_label = f"Claim {objective.display_name.title()}"
+                objective_color = (244, 205, 99)
+            elif objective is not None and objective.state is WorldObjectiveState.TELEGRAPHING:
+                objective_label = f"Objective in {math.ceil(match.objective_countdown)}s"
+                objective_color = cfg.MUTED_TEXT
+            else:
+                objective_label = "No objective active"
+                objective_color = cfg.MUTED_TEXT
+            self._draw_key_option(x0, y0 + 18, keys[0], "Development", (118, 208, 149))
+            self._draw_key_option(x0, y0 + 37, keys[1], objective_label, objective_color)
+            self._draw_key_option(x0, y0 + 56, keys[2], "Cancel", cfg.MUTED_TEXT)
+            message = state_info.get("message", "")
+            if message:
+                message_surf = self._tiny.render(_fit_text(self._tiny, message, popup_w - 20), True, (238, 137, 97))
+                self._screen.blit(message_surf, (x0, y0 + 73))
+
+        elif state == "development":
+            territory_ids = state_info.get("development_territories", [])
+            selected = state_info.get("development_index", 0)
+            choice_index = state_info.get("development_choice", 0)
+            choices = (
+                TerritorySpecialization.ECONOMY,
+                TerritorySpecialization.BARRACKS,
+                TerritorySpecialization.FORTRESS,
+                None,
+            )
+            choice = choices[min(max(0, choice_index), len(choices) - 1)]
+            if not territory_ids:
+                return
+            territory_id = territory_ids[min(selected, len(territory_ids) - 1)]
+            territory = match.territories[territory_id]
+            header = self._tiny.render(f"DEVELOP T{territory.id + 1}  {int(territory.food)}g", True, (163, 223, 190))
+            self._screen.blit(header, (x0, y0))
+            current_branch = territory.specialization.name.title()
+            current = f"Current: {current_branch} {territory.specialization_level or 'Ruin' if territory.specialization is not TerritorySpecialization.NONE else '-'}"
+            self._draw_key_option(x0, y0 + 17, keys[0], f"Region T{territory.id + 1}", (161, 203, 231))
+            if choice is None:
+                self._draw_key_option(x0, y0 + 36, keys[1], "Cancel", cfg.MUTED_TEXT)
+                self._draw_key_option(x0, y0 + 55, keys[2], "Back", cfg.MUTED_TEXT)
+            else:
+                quote = territory.development_quote(choice)
+                label = f"{quote.action.title()} {choice.name.title()} ({quote.cost}g)"
+                label_color = (112, 213, 147) if quote.allowed else (232, 142, 96)
+                self._draw_key_option(x0, y0 + 36, keys[1], _fit_text(self._tiny, label, 172), label_color)
+                self._draw_key_option(x0, y0 + 55, keys[2], "Confirm", (244, 205, 98))
+            current_surf = self._tiny.render(_fit_text(self._tiny, current, popup_w - 20), True, cfg.MUTED_TEXT)
+            self._screen.blit(current_surf, (x0, y0 + 73))
+            message = state_info.get("message", "")
+            if message:
+                message_surf = self._tiny.render(_fit_text(self._tiny, message, popup_w - 20), True, (238, 137, 97))
+                self._screen.blit(message_surf, (x0, y0 + 90))
 
     def _draw_key_option(self, x: int, y: int, key: str, label: str, color: tuple) -> None:
         pygame.draw.rect(self._screen, (42, 46, 56), (x, y, 16, 14), border_radius=3)
@@ -831,40 +1371,380 @@ class Renderer:
         label_surf = self._tiny.render(label, True, color)
         self._screen.blit(label_surf, (x + 20, y + 1))
 
+    def _draw_command_dock(self, match: Match, player_states: dict[int, dict]) -> None:
+        for order, (player_idx, state_info) in enumerate(sorted(player_states.items())):
+            player = match.players[player_idx]
+            panel = pygame.Rect(12 + order * 178, cfg.WINDOW_HEIGHT - 46, 168, 36)
+            layer = pygame.Surface(panel.size, pygame.SRCALPHA)
+            pygame.draw.rect(layer, (12, 17, 18, 226), layer.get_rect(), border_radius=5)
+            pygame.draw.rect(layer, (*player.color, 225), (0, 0, 5, panel.height), border_radius=3)
+            pygame.draw.rect(layer, (*_brighten(player.color, 28), 150), layer.get_rect(), 1, border_radius=5)
+            self._screen.blit(layer, panel)
+
+            p_label = self._bold_small.render(f"P{player_idx + 1}", True, (247, 241, 220))
+            self._screen.blit(p_label, p_label.get_rect(center=(panel.x + 19, panel.centery)))
+
+            keys = KEY_LABELS[player_idx]
+            for i, label in enumerate(keys):
+                cell_x = panel.x + 36 + i * 43
+                enabled = True
+                key_rect = pygame.Rect(cell_x, panel.y + 7, 23, 22)
+                fill = (42, 49, 49) if enabled else (29, 33, 33)
+                stroke = _brighten(player.color, 42) if enabled else (71, 76, 74)
+                pygame.draw.rect(self._screen, fill, key_rect, border_radius=4)
+                pygame.draw.rect(self._screen, stroke, key_rect, 1, border_radius=4)
+                key_surf = self._tiny.render(label, True, (251, 245, 224) if enabled else (102, 107, 104))
+                self._screen.blit(key_surf, key_surf.get_rect(center=key_rect.center))
+
+                icon_x = cell_x + 31
+                icon_y = panel.centery
+                icon_c = stroke if enabled else (71, 76, 74)
+                if i == 0:
+                    pygame.draw.line(self._screen, icon_c, (icon_x - 4, icon_y), (icon_x + 4, icon_y), 2)
+                    pygame.draw.line(self._screen, icon_c, (icon_x, icon_y - 4), (icon_x, icon_y + 4), 2)
+                elif i == 1:
+                    pygame.draw.line(self._screen, icon_c, (icon_x - 4, icon_y - 4), (icon_x + 4, icon_y + 4), 2)
+                    pygame.draw.line(self._screen, icon_c, (icon_x + 4, icon_y - 4), (icon_x - 4, icon_y + 4), 2)
+                else:
+                    pygame.draw.rect(self._screen, icon_c, (icon_x - 4, icon_y - 4, 8, 8), 1)
+                    pygame.draw.line(self._screen, icon_c, (icon_x, icon_y - 3), (icon_x, icon_y + 3), 1)
+                    pygame.draw.line(self._screen, icon_c, (icon_x - 3, icon_y), (icon_x + 3, icon_y), 1)
+
     def _draw_top_bar(self, match: Match) -> None:
-        """Minimal top-bar: time + player indicators."""
-        bar = pygame.Surface((cfg.WINDOW_WIDTH, 32), pygame.SRCALPHA)
-        pygame.draw.rect(bar, (12, 16, 22, 160), bar.get_rect())
+        """Compact per-player economy and army overview."""
+        bar_h = 48
+        bar = pygame.Surface((cfg.WINDOW_WIDTH, bar_h), pygame.SRCALPHA)
+        pygame.draw.rect(bar, (8, 13, 13, 232), bar.get_rect())
+        pygame.draw.line(bar, (118, 101, 64, 195), (0, bar_h - 1), (cfg.WINDOW_WIDTH, bar_h - 1), 1)
         self._screen.blit(bar, (0, 0))
 
-        # Time
-        time_text = self._small.render(f"⏱ {_format_time(match.elapsed)}", True, cfg.ACCENT)
-        self._screen.blit(time_text, (16, 8))
+        pygame.draw.circle(self._screen, (211, 170, 78), (18, 24), 7, 1)
+        pygame.draw.line(self._screen, (235, 213, 160), (18, 24), (18, 20), 1)
+        pygame.draw.line(self._screen, (235, 213, 160), (18, 24), (22, 26), 1)
+        time_text = self._bold_small.render(_format_time(match.elapsed), True, (244, 232, 201))
+        self._screen.blit(time_text, (30, 17))
 
-        # Player dots
-        px = 120
-        for player in match.players:
-            alive = player.is_alive and any(t.owner is player and t.queen.is_alive for t in match.territories)
+        slot_x = 72
+        available = cfg.WINDOW_WIDTH - slot_x - 8
+        slot_w = available // max(1, len(match.players))
+        for i, player in enumerate(match.players):
+            rect = pygame.Rect(slot_x + i * slot_w + 3, 6, slot_w - 6, 36)
+            owned = [territory for territory in match.territories if territory.owner is player]
+            alive = player.is_alive and any(t.queen.is_alive for t in owned)
             c = player.color if alive else (72, 72, 68)
-            pygame.draw.circle(self._screen, c, (px, 16), 7)
-            if alive:
-                pygame.draw.circle(self._screen, (248, 238, 218), (px, 16), 7, 1)
-            else:
-                # X mark for eliminated
-                pygame.draw.line(self._screen, (188, 48, 38), (px - 3, 13), (px + 3, 19), 2)
-                pygame.draw.line(self._screen, (188, 48, 38), (px + 3, 13), (px - 3, 19), 2)
-            name = _fit_text(self._tiny, player.name, 68)
-            name_surf = self._tiny.render(name, True, c)
-            self._screen.blit(name_surf, (px + 12, 9))
-            # Territory count
-            owned = sum(1 for t in match.territories if t.owner is player and t.queen.is_alive)
-            if owned > 1:
-                count_surf = self._tiny.render(f"×{owned}", True, cfg.ACCENT_2)
-                self._screen.blit(count_surf, (px + 12 + name_surf.get_width() + 4, 9))
-            px += 140 + name_surf.get_width()
+            panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(panel, (20, 27, 26, 215), panel.get_rect(), border_radius=5)
+            pygame.draw.rect(panel, (*c, 230), (0, 0, 4, panel.get_height()), border_radius=2)
+            pygame.draw.rect(panel, (*_brighten(c, 28), 105), panel.get_rect(), 1, border_radius=5)
+            self._screen.blit(panel, rect)
+
+            pygame.draw.circle(self._screen, c, (rect.x + 15, rect.centery), 7)
+            pygame.draw.circle(self._screen, (247, 238, 211), (rect.x + 15, rect.centery), 7, 1)
+            if not alive:
+                pygame.draw.line(self._screen, (212, 71, 57), (rect.x + 10, rect.centery - 5), (rect.x + 20, rect.centery + 5), 2)
+                pygame.draw.line(self._screen, (212, 71, 57), (rect.x + 20, rect.centery - 5), (rect.x + 10, rect.centery + 5), 2)
+            player_label = self._tiny.render(f"P{i + 1}", True, (247, 241, 220))
+            self._screen.blit(player_label, (rect.x + 27, rect.y + 12))
+
+            if player.war_banner_time > 0:
+                flag_x = rect.x + 49
+                pygame.draw.line(self._screen, (205, 177, 105), (flag_x, rect.y + 10), (flag_x, rect.bottom - 9), 1)
+                pygame.draw.polygon(
+                    self._screen,
+                    (237, 119, 77),
+                    [(flag_x + 1, rect.y + 10), (flag_x + 8, rect.y + 13), (flag_x + 1, rect.y + 17)],
+                )
+                buff_surf = self._tiny.render(str(math.ceil(player.war_banner_time)), True, (255, 225, 139))
+                self._screen.blit(buff_surf, (flag_x + 9, rect.y + 11))
+
+            pygame.draw.line(self._screen, (103, 110, 102), (rect.x + 61, rect.y + 8), (rect.x + 61, rect.bottom - 8), 1)
+
+            gold = int(sum(territory.food for territory in owned))
+            soldiers = sum(territory.soldiers.count for territory in owned)
+            workers = sum(territory.workers.count for territory in owned)
+            soldiers += sum(army.soldiers for army in match.armies if army.attacker is player)
+            soldiers += sum(
+                zone.attacking_soldiers.count
+                for zone in match.combat_zones
+                if zone.attacker is player
+            )
+            stats = (
+                ("gold", gold, (240, 190, 59)),
+                ("soldier", soldiers, (198, 214, 224)),
+                ("worker", workers, (207, 157, 93)),
+            )
+            metrics_x = rect.x + 66
+            metric_w = max(38, (rect.width - 69) // 3)
+            text_color = (242, 239, 220) if alive else (119, 122, 116)
+            for stat_index, (kind, value, icon_color) in enumerate(stats):
+                cell_x = metrics_x + stat_index * metric_w
+                if stat_index:
+                    pygame.draw.line(
+                        self._screen,
+                        (62, 72, 68),
+                        (cell_x - 3, rect.y + 10),
+                        (cell_x - 3, rect.bottom - 10),
+                        1,
+                    )
+                value_surf = self._bold_small.render(_compact_stat(value), True, text_color)
+                group_width = 19 + value_surf.get_width()
+                group_x = cell_x + max(0, (metric_w - group_width) // 2)
+                _draw_resource_icon(
+                    self._screen,
+                    kind,
+                    (group_x + 7, rect.centery),
+                    icon_color if alive else (94, 98, 94),
+                )
+                self._screen.blit(value_surf, (group_x + 18, rect.y + 10))
 
 
 # ─────────────────── Helpers ───────────────────
+
+def _river_flow_paths(viewport: tuple[int, int]) -> list[list[tuple[float, float]]]:
+    width, height = viewport
+    normalized = (
+        ((0.24, -0.04), (0.22, 0.06), (0.17, 0.15), (0.08, 0.24), (-0.03, 0.37)),
+        ((-0.03, 0.53), (0.01, 0.64), (0.07, 0.71), (0.11, 0.78), (0.14, 0.88), (0.16, 1.04)),
+        ((0.80, -0.04), (0.82, 0.06), (0.87, 0.12), (0.94, 0.19), (1.02, 0.28), (1.03, 0.47)),
+        ((1.04, 0.60), (0.99, 0.68), (0.93, 0.75), (0.86, 0.82), (0.82, 0.90), (0.79, 1.04)),
+    )
+    return [[(x * width, y * height) for x, y in path] for path in normalized]
+
+
+def _sample_path(path: list[tuple[float, float]], progress: float) -> tuple[float, float, float, float]:
+    lengths = [math.dist(path[i], path[i + 1]) for i in range(len(path) - 1)]
+    total = max(1.0, sum(lengths))
+    remaining = (progress % 1.0) * total
+    for i, segment_length in enumerate(lengths):
+        if remaining <= segment_length or i == len(lengths) - 1:
+            ratio = remaining / max(1.0, segment_length)
+            x0, y0 = path[i]
+            x1, y1 = path[i + 1]
+            dx = x1 - x0
+            dy = y1 - y0
+            return x0 + dx * ratio, y0 + dy * ratio, dx / segment_length, dy / segment_length
+        remaining -= segment_length
+    x0, y0 = path[-2]
+    x1, y1 = path[-1]
+    length = max(1.0, math.hypot(x1 - x0, y1 - y0))
+    return x1, y1, (x1 - x0) / length, (y1 - y0) / length
+
+
+def _organic_border(polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    border: list[tuple[float, float]] = []
+    for index, start in enumerate(polygon):
+        end = polygon[(index + 1) % len(polygon)]
+        border.extend(_organic_edge(start, end)[:-1])
+    return border
+
+
+def _polygon_edges(
+    polygon: list[tuple[float, float]],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    return [
+        (start, polygon[(index + 1) % len(polygon)])
+        for index, start in enumerate(polygon)
+    ]
+
+
+def _is_outer_map_edge(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    epsilon: float = 1.5,
+) -> bool:
+    """Return whether a polygon edge lies on the playable map perimeter."""
+    return (
+        (abs(start[0]) <= epsilon and abs(end[0]) <= epsilon)
+        or (abs(start[0] - cfg.WINDOW_WIDTH) <= epsilon and abs(end[0] - cfg.WINDOW_WIDTH) <= epsilon)
+        or (abs(start[1]) <= epsilon and abs(end[1]) <= epsilon)
+        or (abs(start[1] - cfg.WINDOW_HEIGHT) <= epsilon and abs(end[1] - cfg.WINDOW_HEIGHT) <= epsilon)
+    )
+
+
+def _organic_edge(
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> list[tuple[float, float]]:
+    forward = start <= end
+    first, second = (start, end) if forward else (end, start)
+    dx = second[0] - first[0]
+    dy = second[1] - first[1]
+    length = max(1.0, math.hypot(dx, dy))
+    normal_x, normal_y = -dy / length, dx / length
+    steps = max(2, math.ceil(length / 20.0))
+    amplitude = min(3.6, max(1.2, length * 0.028))
+    seed = int(
+        round(first[0] * 17.0)
+        + round(first[1] * 29.0)
+        + round(second[0] * 37.0)
+        + round(second[1] * 43.0)
+    )
+    phase = (seed % 997) / 997.0 * math.tau
+    points: list[tuple[float, float]] = []
+    for step in range(steps + 1):
+        ratio = step / steps
+        envelope = math.sin(math.pi * ratio)
+        offset = envelope * amplitude * (
+            math.sin(ratio * math.tau * 1.7 + phase) * 0.72
+            + math.sin(ratio * math.tau * 4.3 + phase * 0.37) * 0.28
+        )
+        points.append(
+            (
+                first[0] + dx * ratio + normal_x * offset,
+                first[1] + dy * ratio + normal_y * offset,
+            )
+        )
+    return points if forward else list(reversed(points))
+
+
+def _nearest_river_distance(
+    point: tuple[float, float],
+    river_paths: list[list[tuple[float, float]]],
+) -> float:
+    distances = [
+        _point_to_segment_distance(point, start, end)
+        for path in river_paths
+        for start, end in zip(path, path[1:])
+    ]
+    return min(distances, default=math.inf)
+
+
+def _point_to_segment_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    px, py = point
+    sx, sy = start
+    ex, ey = end
+    dx = ex - sx
+    dy = ey - sy
+    length_squared = dx * dx + dy * dy
+    if length_squared <= 0.0:
+        return math.hypot(px - sx, py - sy)
+    ratio = max(0.0, min(1.0, ((px - sx) * dx + (py - sy) * dy) / length_squared))
+    closest_x = sx + dx * ratio
+    closest_y = sy + dy * ratio
+    return math.hypot(px - closest_x, py - closest_y)
+
+
+def _sample_closed_path(
+    path: list[tuple[int, int]],
+    spacing: float,
+    offset: float = 0.0,
+) -> list[tuple[float, float, float, float]]:
+    if len(path) < 2:
+        return []
+    segments = [
+        (path[index], path[(index + 1) % len(path)])
+        for index in range(len(path))
+    ]
+    lengths = [math.dist(start, end) for start, end in segments]
+    total = sum(lengths)
+    distance = offset % spacing
+    samples: list[tuple[float, float, float, float]] = []
+    while distance < total:
+        remaining = distance
+        for (start, end), length in zip(segments, lengths):
+            if remaining <= length:
+                ratio = remaining / max(1.0, length)
+                dx = end[0] - start[0]
+                dy = end[1] - start[1]
+                samples.append(
+                    (
+                        start[0] + dx * ratio,
+                        start[1] + dy * ratio,
+                        dx / max(1.0, length),
+                        dy / max(1.0, length),
+                    )
+                )
+                break
+            remaining -= length
+        distance += spacing
+    return samples
+
+
+def _draw_resource_icon(
+    surface: pygame.Surface,
+    kind: str,
+    center: tuple[int, int],
+    color: tuple[int, int, int],
+) -> None:
+    x, y = center
+    if kind == "gold":
+        pygame.draw.circle(surface, _darken(color, 48), center, 7)
+        pygame.draw.circle(surface, color, center, 6)
+        pygame.draw.circle(surface, _brighten(color, 28), (x - 2, y - 2), 2)
+        pygame.draw.circle(surface, (255, 236, 159), center, 6, 1)
+    elif kind == "soldier":
+        shield = [(x, y - 7), (x + 6, y - 4), (x + 5, y + 3), (x, y + 8), (x - 5, y + 3), (x - 6, y - 4)]
+        pygame.draw.polygon(surface, _darken(color, 56), shield)
+        pygame.draw.lines(surface, color, True, shield, 1)
+        pygame.draw.line(surface, _brighten(color, 32), (x - 4, y + 5), (x + 5, y - 5), 2)
+        pygame.draw.line(surface, color, (x - 5, y), (x + 1, y + 6), 1)
+    else:
+        pygame.draw.line(surface, (126, 82, 44), (x - 4, y + 7), (x + 3, y - 5), 3)
+        pygame.draw.line(surface, color, (x - 4, y - 6), (x + 7, y - 3), 3)
+        pygame.draw.line(surface, _brighten(color, 32), (x - 3, y - 7), (x + 6, y - 4), 1)
+
+
+def _compact_stat(value: int) -> str:
+    if value >= 10_000:
+        return f"{value / 1000:.0f}k"
+    if value >= 1_000:
+        return f"{value / 1000:.1f}k"
+    return str(value)
+
+
+def _animation_frame_index(role: str, animation: str, phase: float, frame_count: int) -> int:
+    if frame_count <= 1:
+        return 0
+    if animation == "walk":
+        return int(phase * (8.5 if role == "queen" else 10.5)) % frame_count
+
+    duration = 1.08 if animation == "work" else 0.72
+    cycle = (phase % duration) / duration
+    if cycle < 0.2:
+        frame = 0
+    elif cycle < 0.42:
+        frame = 1
+    elif cycle < 0.57:
+        frame = 2
+    elif cycle < 0.84:
+        frame = 3
+    else:
+        frame = 0
+    return min(frame, frame_count - 1)
+
+
+def _attack_motion(phase: float) -> tuple[float, float]:
+    cycle = (phase % 0.72) / 0.72
+    if cycle < 0.2:
+        lunge = -2.0 * _smoothstep(cycle / 0.2)
+    elif cycle < 0.45:
+        lunge = -2.0 + 11.0 * _ease_out_cubic((cycle - 0.2) / 0.25)
+    elif cycle < 0.58:
+        lunge = 9.0 - 2.0 * _smoothstep((cycle - 0.45) / 0.13)
+    else:
+        lunge = 7.0 * (1.0 - _smoothstep((cycle - 0.58) / 0.42))
+    impact = math.exp(-((cycle - 0.46) / 0.055) ** 2)
+    return lunge, impact
+
+
+def _work_impact(phase: float) -> float:
+    cycle = (phase % 1.08) / 1.08
+    return math.exp(-((cycle - 0.56) / 0.07) ** 2)
+
+
+def _smoothstep(value: float) -> float:
+    value = max(0.0, min(1.0, value))
+    return value * value * (3.0 - 2.0 * value)
+
+
+def _ease_out_cubic(value: float) -> float:
+    value = max(0.0, min(1.0, value))
+    return 1.0 - (1.0 - value) ** 3
+
 
 def _wandering_position(territory: Territory, role: str, index: int, elapsed: float) -> tuple[tuple[int, int], float]:
     polygon = territory.polygon
@@ -915,14 +1795,40 @@ def _decor_point(territory: Territory, seed: int, spread_ratio: float) -> tuple[
     return int(cx), int(cy)
 
 
-def _draw_popup_bg(screen: pygame.Surface, rect: pygame.Rect, color: tuple[int, int, int]) -> None:
+def _specialization_site_candidates(territory: Territory) -> list[tuple[float, float]]:
+    """Return stable interior building sites, ordered independently of rivers."""
+    cx, cy = territory.centroid
+    candidates: list[tuple[float, float]] = []
+
+    # Walking partway toward multiple vertices keeps each site inside even for
+    # irregular territories, while giving the renderer enough alternatives to
+    # avoid riverbeds and the capital.
+    for vx, vy in territory.polygon:
+        for factor in (0.34, 0.48):
+            px = cx + (vx - cx) * factor
+            py = cy + (vy - cy) * factor
+            if (
+                48 <= px <= cfg.WINDOW_WIDTH - 48
+                and 42 <= py <= cfg.WINDOW_HEIGHT - 42
+                and _point_in_polygon((px, py), territory.polygon)
+            ):
+                candidates.append((px, py))
+    return candidates
+
+
+def _draw_popup_bg(
+    screen: pygame.Surface,
+    rect: pygame.Rect,
+    color: tuple[int, int, int],
+    radius: int = 6,
+) -> None:
     shadow = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-    pygame.draw.rect(shadow, (0, 0, 0, 130), shadow.get_rect(), border_radius=10)
+    pygame.draw.rect(shadow, (0, 0, 0, 130), shadow.get_rect(), border_radius=radius)
     screen.blit(shadow, rect.move(0, 4))
     panel = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-    pygame.draw.rect(panel, (22, 26, 34, 230), panel.get_rect(), border_radius=10)
+    pygame.draw.rect(panel, (22, 26, 31, 236), panel.get_rect(), border_radius=radius)
     screen.blit(panel, rect)
-    pygame.draw.rect(screen, _brighten(color, 18), rect, 2, border_radius=10)
+    pygame.draw.rect(screen, _brighten(color, 18), rect, 2, border_radius=radius)
 
 
 def _draw_pill(screen: pygame.Surface, rect: pygame.Rect, fill: tuple, border: tuple) -> None:

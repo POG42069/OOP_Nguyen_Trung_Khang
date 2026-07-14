@@ -5,6 +5,8 @@ import random
 from abc import ABC, abstractmethod
 
 from quadrant_wars import balance_config as cfg
+from quadrant_wars.core.objective import WorldObjectiveType
+from quadrant_wars.core.territory import TerritorySpecialization
 
 
 class Player(ABC):
@@ -13,7 +15,7 @@ class Player(ABC):
         self._name = name
         self._color = color
         self._is_alive = True
-        self._supply_buff = 0.0
+        self._war_banner_time = 0.0
 
     @property
     def id(self) -> int:
@@ -32,15 +34,26 @@ class Player(ABC):
         return self._is_alive
 
     @property
-    def has_buff(self) -> bool:
-        return self._supply_buff > 0.0
+    def attack_multiplier(self) -> float:
+        if self._war_banner_time > 0.0:
+            return cfg.WAR_BANNER_ATTACK_MULTIPLIER
+        return 1.0
 
     @property
-    def buff_time(self) -> float:
-        return self._supply_buff
+    def march_speed_multiplier(self) -> float:
+        if self._war_banner_time > 0.0:
+            return cfg.WAR_BANNER_MARCH_MULTIPLIER
+        return 1.0
 
-    def apply_buff(self, duration: float) -> None:
-        self._supply_buff = max(self._supply_buff, duration)
+    @property
+    def war_banner_time(self) -> float:
+        return self._war_banner_time
+
+    def apply_war_banner(self, duration: float = cfg.WAR_BANNER_DURATION) -> None:
+        self._war_banner_time = max(self._war_banner_time, duration)
+
+    def _update_buffs(self, dt: float) -> None:
+        self._war_banner_time = max(0.0, self._war_banner_time - dt)
 
     def eliminate(self) -> None:
         self._is_alive = False
@@ -52,8 +65,7 @@ class Player(ABC):
 
 class HumanPlayer(Player):
     def update(self, match: object, dt: float) -> None:
-        if self._supply_buff > 0:
-            self._supply_buff -= dt
+        self._update_buffs(dt)
         return None
 
 
@@ -68,6 +80,8 @@ class BotStrategy(ABC):
     probe_ratio = 0.50
     late_min_margin = 0.56
     late_attack_ratio = 0.80
+    objective_min_soldiers = 5
+    objective_commit_ratio = 0.50
 
     def should_buy_worker(self, home: object) -> bool:
         if home.workers.count >= cfg.MAX_WORKERS_PER_TERRITORY:
@@ -110,6 +124,40 @@ class BotStrategy(ABC):
             return min(hard_available, max(3, int(source.soldiers.count * self.probe_ratio)))
         return 0
 
+    def choose_specialization(
+        self,
+        match: object,
+        bot: "BotPlayer",
+        territory: object,
+    ) -> TerritorySpecialization:
+        enemies = [
+            t for t in match.territories
+            if t.owner is not bot and getattr(t.owner, "is_alive", False)
+        ]
+        incoming = any(
+            army.target_id == territory.id and army.attacker is not bot
+            for army in match.armies
+            if getattr(army, "targets_territory", False)
+        )
+        nearest = min(
+            (
+                math.hypot(
+                    territory.centroid[0] - enemy.centroid[0],
+                    territory.centroid[1] - enemy.centroid[1],
+                )
+                for enemy in enemies
+            ),
+            default=9999.0,
+        )
+        if incoming or nearest < 380.0:
+            return TerritorySpecialization.FORTRESS
+        if territory.workers.count >= 3:
+            return TerritorySpecialization.ECONOMY
+        return TerritorySpecialization.BARRACKS
+
+    def objective_threshold(self, objective_type: WorldObjectiveType) -> int:
+        return self.objective_min_soldiers
+
 
 class AggressiveStrategy(BotStrategy):
     name = "Aggressive"
@@ -122,6 +170,16 @@ class AggressiveStrategy(BotStrategy):
     probe_ratio = 0.56
     late_min_margin = 0.45
     late_attack_ratio = 0.9
+    objective_min_soldiers = 4
+    objective_commit_ratio = 0.66
+
+    def choose_specialization(
+        self,
+        match: object,
+        bot: "BotPlayer",
+        territory: object,
+    ) -> TerritorySpecialization:
+        return TerritorySpecialization.BARRACKS
 
 
 class EconomicStrategy(BotStrategy):
@@ -135,6 +193,21 @@ class EconomicStrategy(BotStrategy):
     probe_ratio = 0.34
     late_min_margin = 0.55
     late_attack_ratio = 0.74
+    objective_min_soldiers = 6
+    objective_commit_ratio = 0.33
+
+    def choose_specialization(
+        self,
+        match: object,
+        bot: "BotPlayer",
+        territory: object,
+    ) -> TerritorySpecialization:
+        return TerritorySpecialization.ECONOMY
+
+    def objective_threshold(self, objective_type: WorldObjectiveType) -> int:
+        if objective_type is WorldObjectiveType.CARAVAN:
+            return 4
+        return self.objective_min_soldiers
 
 
 class BalancedStrategy(BotStrategy):
@@ -148,6 +221,8 @@ class BalancedStrategy(BotStrategy):
     probe_ratio = 0.48
     late_min_margin = 0.50
     late_attack_ratio = 0.80
+    objective_min_soldiers = 5
+    objective_commit_ratio = 0.50
 
 
 STRATEGIES = [AggressiveStrategy, BalancedStrategy, EconomicStrategy]
@@ -171,10 +246,9 @@ class BotPlayer(Player):
         return self._strategy
 
     def update(self, match: object, dt: float) -> None:
+        self._update_buffs(dt)
         if not self.is_alive:
             return
-        if self._supply_buff > 0:
-            self._supply_buff -= dt
         self._decision_timer -= dt
         self._attack_cooldown = max(0.0, self._attack_cooldown - dt)
         if self._decision_timer > 0:
@@ -186,13 +260,35 @@ class BotPlayer(Player):
         if not owned:
             return
 
+        # Develop at most one region per decision before spending the local treasury.
+        for home in sorted(owned, key=lambda t: (t.specialization_level, -t.food, t.id)):
+            desired = self._strategy.choose_specialization(match, self, home)
+            quote = home.development_quote(desired)
+            army_ready_for_upgrade = home.soldiers.count >= max(4, self._strategy.objective_min_soldiers)
+            if quote.allowed and (quote.action != "upgrade" or army_ready_for_upgrade):
+                result = match.develop_territory(self, home.id, desired)
+                if result.success:
+                    break
+
         for home in owned:
+            desired = self._strategy.choose_specialization(match, self, home)
+            development = home.development_quote(desired)
+            # A bot must stop buying short-term units long enough to afford its plan.
+            army_ready_for_upgrade = home.soldiers.count >= max(4, self._strategy.objective_min_soldiers)
+            should_save = development.action in ("build", "repair", "convert") or (
+                development.action == "upgrade" and army_ready_for_upgrade
+            )
+            if development.cost > 0 and not development.allowed and should_save:
+                continue
             if self._strategy.should_buy_worker(home):
                 home.buy_worker()
-            elif home.food >= cfg.SOLDIER_COST:
+            elif home.food >= home.soldier_cost:
                 home.buy_soldier()
 
         if self._attack_cooldown > 0:
+            return
+        if self._try_objective_attack(match, owned):
+            self._attack_cooldown = cfg.BOT_MIN_ATTACK_INTERVAL
             return
         sources = [t for t in match.territories if t.owner is self and t.soldiers.count > 2 and t.queen.is_alive]
         for source in sorted(sources, key=lambda t: t.soldiers.count, reverse=True):
@@ -220,3 +316,36 @@ class BotPlayer(Player):
                 if match.issue_attack(source, target, amount):
                     self._attack_cooldown = cfg.BOT_MIN_ATTACK_INTERVAL
                     return
+
+    def _try_objective_attack(self, match: object, owned: list[object]) -> bool:
+        objective = getattr(match, "world_objective", None)
+        if objective is None or not objective.active:
+            return False
+        if match.has_objective_commitment(self):
+            return False
+
+        sources = []
+        for territory in owned:
+            available = max(0, territory.soldiers.count - 1)
+            if available:
+                distance = math.hypot(
+                    territory.centroid[0] - objective.centroid[0],
+                    territory.centroid[1] - objective.centroid[1],
+                )
+                sources.append((distance, territory, available))
+        total_available = sum(item[2] for item in sources)
+        threshold = self._strategy.objective_threshold(objective.objective_type)
+        if total_available < threshold:
+            return False
+
+        commitment = max(threshold, math.ceil(total_available * self._strategy.objective_commit_ratio))
+        remaining = min(total_available, commitment)
+        issued = False
+        for _, source, available in sorted(sources, key=lambda item: item[0]):
+            amount = min(available, remaining)
+            if amount > 0 and match.issue_objective_attack(source, amount):
+                remaining -= amount
+                issued = True
+            if remaining <= 0:
+                break
+        return issued

@@ -103,8 +103,8 @@ class CombatZone:
 
         # --- Attackers deal damage to defenders ---
         atk_damage = attackers.dps * cfg.COMBAT_TICK_INTERVAL
-        if getattr(self._attacker, "has_buff", False):
-            atk_damage *= cfg.SUPPLY_BUFF_ATK_BONUS
+        atk_damage *= float(getattr(self._attacker, "attack_multiplier", 1.0))
+        atk_damage *= float(getattr(territory, "damage_taken_multiplier", 1.0))
 
         if atk_damage > 0:
             self._damage_flash = 1.0
@@ -130,8 +130,8 @@ class CombatZone:
         if territory.queen.is_alive:
             def_damage += territory.queen.dps * cfg.COMBAT_TICK_INTERVAL
 
-        if hasattr(territory, "owner") and getattr(territory.owner, "has_buff", False):
-            def_damage *= cfg.SUPPLY_BUFF_ATK_BONUS
+        if hasattr(territory, "owner"):
+            def_damage *= float(getattr(territory.owner, "attack_multiplier", 1.0))
 
         if def_damage > 0:
             attackers.take_damage(def_damage)
@@ -153,10 +153,14 @@ class CombatResolver:
     """Instant combat resolution for headless simulation and bot evaluation."""
 
     @staticmethod
-    def resolve_instant(attacking_soldiers: int, territory: object) -> CombatResult:
+    def resolve_instant(
+        attacking_soldiers: int,
+        territory: object,
+        attacker: object | None = None,
+    ) -> CombatResult:
         """Simulate combat to completion instantly (for headless sim)."""
         zone = CombatZone(
-            attacker=None,
+            attacker=attacker,
             attacker_color=(0, 0, 0),
             territory=territory,
             soldier_count=attacking_soldiers,

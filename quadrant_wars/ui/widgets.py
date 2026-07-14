@@ -15,21 +15,21 @@ class Button:
         mouse = pygame.mouse.get_pos()
         hover = self.rect.collidepoint(mouse)
         shadow = self.rect.move(0, 4)
-        pygame.draw.rect(surface, (0, 0, 0), shadow, border_radius=8)
+        pygame.draw.rect(surface, (4, 8, 7), shadow, border_radius=5)
 
         if active:
-            color = cfg.ACCENT_2 if hover else cfg.ACCENT
-            text_color = (13, 18, 24)
-            stroke = (255, 239, 203) if hover else (117, 219, 228)
+            color = (234, 184, 82) if hover else (201, 148, 58)
+            text_color = (24, 25, 20)
+            stroke = (255, 228, 159) if hover else (230, 193, 119)
         else:
             color = (67, 72, 82)
             text_color = cfg.MUTED_TEXT
             stroke = (91, 96, 106)
 
-        pygame.draw.rect(surface, color, self.rect, border_radius=8)
+        pygame.draw.rect(surface, color, self.rect, border_radius=5)
         shine = pygame.Rect(self.rect.x + 2, self.rect.y + 2, self.rect.width - 4, max(8, self.rect.height // 3))
-        pygame.draw.rect(surface, _brighten(color, 22), shine, border_radius=7)
-        pygame.draw.rect(surface, stroke, self.rect, 2, border_radius=8)
+        pygame.draw.rect(surface, _brighten(color, 18), shine, border_radius=4)
+        pygame.draw.rect(surface, stroke, self.rect, 1, border_radius=5)
         text = font.render(self.label, True, text_color)
         surface.blit(text, text.get_rect(center=self.rect.center))
 

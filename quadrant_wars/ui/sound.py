@@ -20,6 +20,12 @@ class SoundManager:
             "attack": (190, 0.20, "drop", 0.35),
             "combat_defend": (115, 0.36, "noise", 0.44),
             "combat_win": (260, 0.42, "rise", 0.48),
+            "develop": (520, 0.19, "bell", 0.30),
+            "objective_warning": (310, 0.46, "rise", 0.38),
+            "objective_ready": (430, 0.30, "bell", 0.42),
+            "objective_contest": (145, 0.25, "drop", 0.38),
+            "objective_claim": (590, 0.58, "fanfare", 0.48),
+            "objective_expire": (120, 0.34, "noise", 0.24),
             "win": (520, 0.72, "fanfare", 0.50),
         }
         for name, spec in specs.items():

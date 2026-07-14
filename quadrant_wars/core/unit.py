@@ -136,7 +136,8 @@ class Queen(Unit):
     def update(self, dt: float, territory: object) -> None:
         # Queen regenerates HP when not in combat
         if self.is_alive and self._hp_list[0] < self.max_hp:
-            regen = cfg.QUEEN_HP_REGEN * dt
+            multiplier = float(getattr(territory, "queen_regen_multiplier", 1.0))
+            regen = cfg.QUEEN_HP_REGEN * multiplier * dt
             self._hp_list[0] = min(float(self.max_hp), self._hp_list[0] + regen)
 
     def can_command_attack(self) -> bool:
@@ -162,7 +163,8 @@ class Worker(Unit):
 
     def update(self, dt: float, territory: object) -> None:
         if self.is_alive and hasattr(territory, "add_food"):
-            territory.add_food(self._count * cfg.FOOD_PER_WORKER_PER_SECOND * dt)
+            multiplier = float(getattr(territory, "worker_income_multiplier", 1.0))
+            territory.add_food(self._count * cfg.FOOD_PER_WORKER_PER_SECOND * multiplier * dt)
 
 
 class Soldier(Unit):
