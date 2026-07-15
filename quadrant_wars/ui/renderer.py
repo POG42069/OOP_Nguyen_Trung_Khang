@@ -5,6 +5,17 @@ import math
 import pygame
 
 from quadrant_wars import balance_config as cfg
+from quadrant_wars.core.battle_arena import (
+    DEATH_VISUAL_DURATION,
+    BattleArenaType,
+    BattleUnitType,
+)
+from quadrant_wars.core.battlefield import (
+    RIVER_BUILDING_CLEARANCE as SHARED_RIVER_BUILDING_CLEARANCE,
+    nearest_river_distance as shared_nearest_river_distance,
+    river_flow_paths as shared_river_flow_paths,
+    specialization_site_position,
+)
 from quadrant_wars.core.objective import WorldObjective, WorldObjectiveState, WorldObjectiveType
 from quadrant_wars.core.territory import Territory, TerritorySpecialization
 from quadrant_wars.game.game_manager import Match
@@ -24,7 +35,9 @@ FORTRESS_STYLES = (
     "fortress_forest",
     "fortress_sun",
 )
-RIVER_BUILDING_CLEARANCE = 120.0
+RIVER_BUILDING_CLEARANCE = SHARED_RIVER_BUILDING_CLEARANCE
+WANDERING_RIVER_CLEARANCE = 120.0
+WANDERING_RIVER_PATHS = shared_river_flow_paths((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT))
 
 
 class Renderer:
@@ -45,8 +58,34 @@ class Renderer:
         self._unit_targets: dict[str, tuple[float, float]] = {}
         self._unit_facing: dict[str, int] = {}
         self._sprite_cache: dict[str, pygame.Surface] = {}
+        self._territory_layer_cache: dict[
+            tuple[object, ...],
+            tuple[pygame.Surface, pygame.Rect],
+        ] = {}
+        self._territory_decor_cache: dict[
+            int,
+            tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]],
+        ] = {}
         self._last_elapsed: float | None = None
         self._frame_dt = 1.0 / max(30, cfg.FPS)
+
+    @property
+    def target_surface(self) -> pygame.Surface:
+        return self._screen
+
+    def bind_surface(self, screen: pygame.Surface) -> None:
+        if screen is self._screen:
+            return
+        if screen.get_size() != self._screen.get_size():
+            self._art = ArtAssets(screen.get_size())
+            self._background = self._build_background()
+            self._cloud_shadow = self._build_cloud_shadow()
+            self._water_layer = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            self._river_paths = _river_flow_paths(screen.get_size())
+            self._sprite_cache.clear()
+            self._territory_layer_cache.clear()
+            self._territory_decor_cache.clear()
+        self._screen = screen
 
     def draw_match(self, match: object, player_states: dict[int, dict]) -> None:
         elapsed = float(getattr(match, "elapsed", 0.0))
@@ -96,9 +135,9 @@ class Renderer:
         for army in match.armies:
             self._draw_army(army)
 
-        # Combat zones
-        for zone in match.combat_zones:
-            self._draw_combat_zone(zone, match.elapsed)
+        # Every visible combatant is a persistent BattleAgent.
+        for arena in match.battles:
+            self._draw_battle_arena(arena)
 
         # Combat result effects
         for effect in match.effects:
@@ -179,6 +218,18 @@ class Renderer:
     def _draw_territory(self, territory: Territory, elapsed: float) -> None:
         alive = getattr(territory.owner, "is_alive", False)
         base = territory.owner.color if alive else (72, 72, 68)
+        cache_key = (
+            territory.id,
+            getattr(territory.owner, "id", id(territory.owner)),
+            alive,
+            base,
+        )
+        cached = self._territory_layer_cache.get(cache_key)
+        if cached is not None:
+            layer, bounds = cached
+            self._screen.blit(layer, bounds)
+            return
+
         internal_borders = [
             _organic_edge(start, end)
             for start, end in _polygon_edges(territory.polygon)
@@ -198,7 +249,6 @@ class Renderer:
         tint_alpha = 58 if alive else 100
         pygame.draw.polygon(layer, (*base, tint_alpha), local)
 
-        pulse = 0.5 + 0.5 * math.sin(elapsed * 1.7 + territory.id * 1.4)
         edge = _brighten(base, 48) if alive else (112, 108, 98)
         # Keep the map-facing edges free of strokes.  Only ownership edges
         # shared by territories receive the ornate border treatment.
@@ -207,12 +257,13 @@ class Renderer:
             pygame.draw.lines(layer, (12, 18, 13, 135), False, border, 8)
             pygame.draw.lines(layer, (91, 82, 61, 205), False, border, 5)
             pygame.draw.lines(layer, (*_darken(base, 34), 238), False, border, 4)
-            pygame.draw.lines(layer, (*edge, int(178 + pulse * 50)), False, border, 2)
+            pygame.draw.lines(layer, (*edge, 212), False, border, 2)
             pygame.draw.aalines(layer, (255, 246, 210, 105), False, border)
 
             for index, point in enumerate(border[2:-2:5]):
                 if (index + territory.id) % 2 == 0:
                     pygame.draw.circle(layer, (255, 239, 190, 138), point, 2)
+        self._territory_layer_cache[cache_key] = (layer, bounds)
         self._screen.blit(layer, bounds)
 
     def _draw_territory_hud(self, territory: Territory) -> None:
@@ -241,15 +292,24 @@ class Renderer:
             }[territory.specialization]
             level = territory.specialization_level
             label = f"{branch} {level if level else 'RUIN'}"
-            chip = pygame.Rect(cx - 34, badge.bottom + 4, 68, 15)
+            if (
+                territory.specialization is TerritorySpecialization.FORTRESS
+                and level > 0
+            ):
+                label += f"  {territory.defenders.count}/{territory.defender_capacity}"
+                if territory.next_defender_respawn is not None:
+                    label += f"  {math.ceil(territory.next_defender_respawn)}s"
+            chip_w = 116 if len(label) > 8 else 68
+            chip = pygame.Rect(cx - chip_w // 2, badge.bottom + 4, chip_w, 15)
             fill = (35, 43, 37, 220) if level else (62, 47, 38, 220)
             _draw_pill(self._screen, chip, fill, _brighten(owner_color, 22))
             chip_text = self._tiny.render(label, True, (242, 232, 195))
             self._screen.blit(chip_text, chip_text.get_rect(center=chip.center))
 
         # Gold remains numeric because it is a spendable resource, not a unit counter.
-        food_text = self._tiny.render(str(int(territory.food)), True, (255, 241, 196))
-        food = pygame.Rect(cx - 28, cy + 76, 56, 20)
+        food_label = f"{int(territory.food)}  +{territory.income_per_second:.1f}/s"
+        food_text = self._tiny.render(food_label, True, (255, 241, 196))
+        food = pygame.Rect(cx - 47, cy + 76, 94, 20)
         _draw_pill(self._screen, food, (15, 20, 18, 210), (211, 163, 53))
         pygame.draw.circle(self._screen, (242, 193, 66), (food.x + 12, food.centery), 5)
         pygame.draw.circle(self._screen, (255, 230, 128), (food.x + 11, food.centery - 1), 2)
@@ -278,20 +338,26 @@ class Renderer:
 
     def _draw_territory_decor(self, territory: Territory, elapsed: float) -> None:
         # The painted map already carries the biome. These accents add motion only.
-        for i in range(7):
-            x, y = _decor_point(territory, 150 + i, 0.9)
+        points = self._territory_decor_cache.get(territory.id)
+        if points is None:
+            points = (
+                tuple(_decor_point(territory, 150 + i, 0.9) for i in range(7)),
+                tuple(_decor_point(territory, 80 + i, 0.75) for i in range(2)),
+                tuple(_decor_point(territory, 100 + i, 0.82) for i in range(4)),
+            )
+            self._territory_decor_cache[territory.id] = points
+        grass_points, rock_points, flower_points = points
+        for i, (x, y) in enumerate(grass_points):
             _draw_grass(self._screen, (x, y), elapsed + i)
 
-        for i in range(2):
-            x, y = _decor_point(territory, 80 + i, 0.75)
+        for i, (x, y) in enumerate(rock_points):
             _draw_rock(self._screen, (x, y), 0.34 + i * 0.08)
 
-        for i in range(4):
-            x, y = _decor_point(territory, 100 + i, 0.82)
+        for i, (x, y) in enumerate(flower_points):
             _draw_flower(self._screen, (x, y), territory.owner.color, elapsed + i * 1.3)
 
     def _draw_base_building(self, territory: Territory, elapsed: float) -> None:
-        x, y = _decor_point(territory, 7, 0.28)
+        x, y = map(int, territory.battle_position)
         color = territory.owner.color
         alive = getattr(territory.owner, "is_alive", False)
         width = 122 if territory.is_capital else 108
@@ -386,33 +452,8 @@ class Renderer:
             self._draw_fortress_site((x, y), faction, level, elapsed)
 
     def _specialization_site_position(self, territory: Territory) -> tuple[int, int]:
-        """Find a stable dry site with ample separation from the capital."""
-        capital = _decor_point(territory, 7, 0.28)
-        candidates = _specialization_site_candidates(territory)
-        if not candidates:
-            return _decor_point(territory, 328, 0.62)
-
-        def capital_distance(point: tuple[float, float]) -> float:
-            return math.hypot(point[0] - capital[0], point[1] - capital[1])
-
-        def river_distance(point: tuple[float, float]) -> float:
-            return _nearest_river_distance(point, self._river_paths)
-
-        # Buildings are substantially wider than the river centre line.  A
-        # generous clearance prevents their foundation from touching water.
-        dry_candidates = [
-            point
-            for point in candidates
-            # Keep a small conversion margin because the final draw position
-            # is snapped to integer pixels.
-            if river_distance(point) >= RIVER_BUILDING_CLEARANCE + 2.0
-        ]
-        if dry_candidates:
-            best = max(dry_candidates, key=capital_distance)
-        else:
-            # Very narrow territories still pick the driest valid point first.
-            best = max(candidates, key=lambda point: (river_distance(point), capital_distance(point)))
-        return int(best[0]), int(best[1])
+        point = specialization_site_position(territory)
+        return int(point[0]), int(point[1])
 
     def _draw_economy_site(
         self,
@@ -490,9 +531,25 @@ class Renderer:
             glint_y = y - 25 + int(math.sin(elapsed * 2.0 + i) * 2)
             pygame.draw.circle(self._screen, _brighten(faction, 40), (glint_x, glint_y), 3)
 
+        # Spear racks and a compact guard post make the defensive role visible.
+        rack_x = x + width // 2 + 9
+        pygame.draw.line(self._screen, (91, 63, 36), (rack_x - 7, y + 14), (rack_x + 7, y - 18), 3)
+        pygame.draw.line(self._screen, (91, 63, 36), (rack_x + 7, y + 14), (rack_x - 7, y - 18), 3)
+        for offset in (-5, 1, 7):
+            pygame.draw.line(self._screen, (173, 174, 163), (rack_x + offset, y + 8), (rack_x + offset + 2, y - 23), 2)
+            pygame.draw.polygon(
+                self._screen,
+                (219, 218, 196),
+                [
+                    (rack_x + offset + 2, y - 28),
+                    (rack_x + offset - 1, y - 21),
+                    (rack_x + offset + 5, y - 22),
+                ],
+            )
+
     def _draw_spawn_effects(self, territory: Territory) -> None:
         """Draw birth animation when units spawn from queen."""
-        cx, cy = territory.centroid
+        cx, cy = territory.battle_position
         for t in territory.spawn_effects:
             progress = 1.0 - t
             alpha = int(180 * t)
@@ -522,7 +579,18 @@ class Renderer:
             
         vs_soldiers = [vs for vs in territory.visual_spawns if vs["role"] == "soldier"]
         vs_workers = [vs for vs in territory.visual_spawns if vs["role"] == "worker"]
+        vs_defenders = [vs for vs in territory.visual_spawns if vs["role"] == "defender"]
         
+        active_arena = next(
+            (
+                arena
+                for arena in getattr(match, "battles", [])
+                if arena.arena_type is BattleArenaType.TERRITORY
+                and arena.target is territory
+            ),
+            None,
+        )
+
         sprites: list[tuple[str, int]] = []
         if territory.queen.is_alive:
             sprites.append(("queen", 0))
@@ -531,14 +599,17 @@ class Renderer:
         for i in range(w_drawn):
             sprites.append(("worker", i))
             
-        s_drawn = min(territory.soldiers.count - len(vs_soldiers), 18 - len(vs_soldiers))
+        s_drawn = min(
+            territory.soldiers.count - len(vs_soldiers),
+            18 - len(vs_soldiers),
+        )
         for i in range(s_drawn):
             sprites.append(("soldier", i))
 
-        active_zone = next(
-            (z for z in getattr(match, "combat_zones", []) if z.territory is territory),
-            None,
-        )
+        d_drawn = max(0, territory.defenders.count - len(vs_defenders))
+        for i in range(d_drawn):
+            sprites.append(("defender", i))
+
         for role, index in sprites:
             key = f"{territory.id}:{role}:{index}"
 
@@ -546,35 +617,58 @@ class Renderer:
             animation_phase = elapsed + index * 0.17 + territory.id * 0.31
             impact = 0.0
             hit_flash = 0.0
-            if active_zone and role in ("soldier", "queen"):
-                atk_idx = index % max(1, active_zone.attacking_soldiers.count)
-                angle = atk_idx * 1.5 + elapsed * 0.5
+            if active_arena is not None and role == "queen":
+                gate_x, gate_y = territory.battle_position
+                target_pos = (gate_x, gate_y + 13)
+                scale = 0.95
+                animation = "attack" if active_arena.damage_flash > 0.2 else "idle"
+                animation_phase = active_arena.elapsed + territory.id * 0.07
+                hit_flash = active_arena.damage_flash * 0.42
+            elif active_arena is not None and role == "worker":
+                gate_x, gate_y = territory.battle_position
+                shelter_angle = index * math.tau / max(1, territory.workers.count)
                 target_pos = (
-                    active_zone.position[0] + math.cos(angle) * 35,
-                    active_zone.position[1] + math.sin(angle) * 35,
+                    gate_x + math.cos(shelter_angle) * 17,
+                    gate_y + 17 + math.sin(shelter_angle) * 7,
                 )
-                scale = 0.95 if role == "queen" else 0.8
-                animation = "attack"
-                animation_phase = elapsed + index * 0.13 + territory.id * 0.07
-                hit_flash = active_zone.damage_flash * 0.72
+                scale = 0.66
+                animation = "idle"
             else:
-                target_pos, scale = _wandering_position(territory, role, index, elapsed)
+                if role == "defender":
+                    target_pos, scale = _defender_patrol_position(
+                        territory,
+                        index,
+                        elapsed,
+                    )
+                else:
+                    target_pos, scale = _wandering_position(territory, role, index, elapsed)
 
                 if role == "worker":
                     work_time = (elapsed + index * 1.13 + territory.id * 0.47) % 5.4
                     if work_time < 1.08:
                         animation = "work"
                         animation_phase = work_time
-                        target_pos = self._unit_targets.get(key, target_pos)
+                        target_pos = self._unit_positions.get(key, target_pos)
                     else:
                         self._unit_targets[key] = target_pos
 
-            (nx, ny), speed, facing = self._smooth_unit_position(key, target_pos, 3.2)
+            max_speed = {
+                "queen": 36.0,
+                "worker": 44.0,
+                "soldier": 52.0,
+                "defender": 40.0,
+            }[role]
+            (nx, ny), speed, facing = self._smooth_unit_position(
+                key,
+                target_pos,
+                3.2,
+                max_speed=max_speed,
+            )
             draw_x, draw_y = nx, ny
-            if animation == "attack" and active_zone is not None:
+            if animation == "attack" and active_arena is not None:
                 lunge, impact = _attack_motion(animation_phase)
-                to_enemy_x = active_zone.position[0] - nx
-                to_enemy_y = active_zone.position[1] - ny
+                to_enemy_x = active_arena.position[0] - nx
+                to_enemy_y = active_arena.position[1] - ny
                 distance = max(1.0, math.hypot(to_enemy_x, to_enemy_y))
                 draw_x += to_enemy_x / distance * lunge
                 draw_y += to_enemy_y / distance * lunge * 0.55
@@ -596,19 +690,34 @@ class Renderer:
             )
 
         # Draw spawning units emerging from base building
-        base_pos = _decor_point(territory, 7, 0.28)
+        base_pos = territory.battle_position
         base_pos = (base_pos[0] + 3, base_pos[1] + 12) # Door position
         
         for vs in territory.visual_spawns:
             role = vs["role"]
             index = vs["index"]
-            progress = vs["progress"] # 0.0 to 1.0
-            
-            target_pos, scale = _wandering_position(territory, role, index, elapsed)
-            nx = base_pos[0] + (target_pos[0] - base_pos[0]) * progress
-            ny = base_pos[1] + (target_pos[1] - base_pos[1]) * progress
-            facing = 1 if target_pos[0] > base_pos[0] else -1
-            
+            if role == "defender":
+                target_pos, scale = _defender_patrol_position(
+                    territory,
+                    index,
+                    elapsed,
+                )
+            else:
+                target_pos, scale = _wandering_position(territory, role, index, elapsed)
+            unit_key = f"{territory.id}:{role}:{index}"
+            spawn_key = f"{unit_key}:spawn:{id(vs)}"
+            stable_target = self._unit_targets.setdefault(spawn_key, target_pos)
+            self._unit_positions.setdefault(spawn_key, (float(base_pos[0]), float(base_pos[1])))
+            max_speed = 44.0 if role == "worker" else 40.0 if role == "defender" else 52.0
+            (nx, ny), _, facing = self._smooth_unit_position(
+                spawn_key,
+                stable_target,
+                3.4,
+                max_speed=max_speed,
+            )
+            self._unit_positions[unit_key] = (nx, ny)
+            self._unit_facing[unit_key] = facing
+
             self._draw_unit_sprite(
                 (int(nx), int(ny)),
                 color,
@@ -624,6 +733,8 @@ class Renderer:
         key: str,
         target: tuple[float, float],
         responsiveness: float,
+        *,
+        max_speed: float | None = None,
     ) -> tuple[tuple[float, float], float, int]:
         current = self._unit_positions.get(key)
         if current is None:
@@ -632,8 +743,21 @@ class Renderer:
             return target, 0.0, facing
 
         alpha = 1.0 - math.exp(-responsiveness * self._frame_dt)
-        nx = current[0] + (target[0] - current[0]) * alpha
-        ny = current[1] + (target[1] - current[1]) * alpha
+        step_x = (target[0] - current[0]) * alpha
+        step_y = (target[1] - current[1]) * alpha
+        step_distance = math.hypot(step_x, step_y)
+        if max_speed is not None and self._frame_dt > 0.0:
+            max_step = max(0.0, max_speed) * self._frame_dt
+            if step_distance > max_step:
+                if max_step <= 0.0:
+                    step_x = 0.0
+                    step_y = 0.0
+                else:
+                    scale = max_step / step_distance
+                    step_x *= scale
+                    step_y *= scale
+        nx = current[0] + step_x
+        ny = current[1] + step_y
         self._unit_positions[key] = (nx, ny)
 
         dx = nx - current[0]
@@ -648,18 +772,12 @@ class Renderer:
     def _draw_army(self, army: object) -> None:
         pos = army.position
         current = (int(pos[0]), int(pos[1]))
-        start = (int(army.start[0]), int(army.start[1]))
-        end = (int(army.end[0]), int(army.end[1]))
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        length = max(1.0, math.hypot(dx, dy))
-        nx = -dy / length
-        ny = dx / length
+        ux, uy = army.heading
+        nx, ny = -uy, ux
         color = army.attacker.color
 
         # Dust follows the formation only; the route itself is never drawn.
-        ux, uy = dx / length, dy / length
-        for i in range(8):
+        for i in range(min(12, max(5, army.soldiers // 2))):
             back = 14 + i * 8
             spread = math.sin(army.elapsed * 5 + i * 2.1) * 10
             dot = (int(current[0] - ux * back + nx * spread), int(current[1] - uy * back + ny * spread))
@@ -669,130 +787,221 @@ class Renderer:
             pygame.draw.circle(dust, (198, 174, 123, alpha), (dot_r * 2, dot_r * 2), dot_r)
             self._screen.blit(dust, dust.get_rect(center=dot))
 
-        # Marching soldiers with formation
-        facing = 1 if dx >= 0 else -1
-        visible = max(3, min(9, army.soldiers // 3 + 3))
-        for i in range(visible):
-            row = i - (visible - 1) / 2
-            wave = math.sin(army.elapsed * 9 + i * 1.1) * 1.5
-            back = (i % 3) * 12
-            sprite_pos = (
-                int(current[0] + nx * row * 12 - dx / length * back),
-                int(current[1] + ny * row * 12 - dy / length * back + wave),
-            )
-            scale = 1.0 if i == 0 else 0.85
+        facing = 1 if ux >= 0 else -1
+        count = max(0, int(army.soldiers))
+        scale = _formation_scale(count, marching=True)
+        positions = army.unit_positions
+        indexed = list(enumerate(zip(army.units, positions)))
+        for i, (unit, sprite_pos) in sorted(indexed, key=lambda item: item[1][1][1]):
+            wave = math.sin(army.elapsed * 10.5 + unit.unit_id * 0.37) * max(0.7, scale * 1.7)
             self._draw_unit_sprite(
-                sprite_pos,
+                (round(sprite_pos[0]), round(sprite_pos[1] + wave)),
                 color,
                 scale,
                 "soldier",
-                army.elapsed + i * 0.09,
+                army.elapsed + unit.unit_id * 0.031,
                 facing,
                 animation="walk",
+                direction=(ux, uy),
             )
 
-        # Formation size is communicated by visible soldiers rather than a number badge.
+    def _draw_battle_arena(self, arena: object) -> None:
+        cx, cy = map(int, arena.position)
+        visible_agents = arena.visible_agents
+        living_count = len(arena.living_agents)
+        scale = max(0.52, _formation_scale(max(1, len(visible_agents))))
 
-    def _draw_combat_zone(self, zone: object, elapsed: float) -> None:
-        pos = zone.position
-        cx, cy = int(pos[0]), int(pos[1])
-        t = zone.elapsed
+        ground = pygame.Surface((190, 118), pygame.SRCALPHA)
+        pygame.draw.ellipse(ground, (34, 27, 18, 54), ground.get_rect().inflate(-14, -30))
+        pygame.draw.ellipse(ground, (113, 78, 35, 38), ground.get_rect().inflate(-34, -47), 2)
+        self._screen.blit(ground, ground.get_rect(center=(cx, cy + 15)))
 
-        # Scorched ground, rolling smoke, embers and intermittent fire flashes.
-        scorch = pygame.Surface((142, 88), pygame.SRCALPHA)
-        pygame.draw.ellipse(scorch, (32, 23, 15, 82), scorch.get_rect())
-        pygame.draw.ellipse(scorch, (83, 47, 18, 42), scorch.get_rect().inflate(-24, -18), 3)
-        self._screen.blit(scorch, scorch.get_rect(center=(cx, cy + 10)))
+        # Smoke is intentionally sparse and behind units. Density drops as the
+        # arena gets crowded, while every Soldier remains visible.
+        smoke_count = max(2, min(8, 10 - living_count // 24))
+        smoke = pygame.Surface((186, 132), pygame.SRCALPHA)
+        local_x, local_y = smoke.get_rect().center
+        for index in range(smoke_count):
+            life = (arena.elapsed * (0.26 + index * 0.017) + index * 0.173) % 1.0
+            angle = index * 2.399 + arena.elapsed * 0.12
+            distance = 16 + (index % 4) * 13
+            px = local_x + int(math.cos(angle) * distance)
+            py = local_y + int(math.sin(angle) * distance * 0.45 - life * 28)
+            radius = 6 + int(life * 10)
+            alpha = int(56 * (1.0 - life))
+            pygame.draw.circle(smoke, (56, 58, 52, alpha), (px, py), radius)
+        self._screen.blit(smoke, smoke.get_rect(center=(cx, cy - 3)))
 
-        smoke_layer = pygame.Surface((180, 150), pygame.SRCALPHA)
-        local_cx, local_cy = smoke_layer.get_rect().center
-        for i in range(12):
-            life = (t * (0.32 + (i % 3) * 0.08) + i * 0.137) % 1.0
-            angle = i * 2.399 + math.sin(t * 0.7 + i) * 0.5
-            distance = 12 + (i % 5) * 7 + life * 22
-            px = local_cx + int(math.cos(angle) * distance)
-            py = local_cy + int(math.sin(angle) * distance * 0.42 - life * 38)
-            radius = 7 + int(life * 15) + i % 4
-            alpha = int(175 * (1.0 - life))
-            smoke_color = (49 + i % 3 * 8, 51 + i % 2 * 6, 47, alpha)
-            pygame.draw.circle(smoke_layer, smoke_color, (px, py), radius)
-            if i % 3 == 0:
-                pygame.draw.circle(smoke_layer, (255, 116, 35, int(178 * (1.0 - life))), (px, py + radius // 2), max(2, radius // 4))
-        self._screen.blit(smoke_layer, smoke_layer.get_rect(center=(cx, cy - 6)))
+        ordered = sorted(visible_agents, key=lambda agent: (agent.position[1], agent.unit_id))
+        fx_stride = max(1, math.ceil(max(1, living_count) / 6))
+        for agent in ordered:
+            if not agent.alive:
+                self._draw_fallen_agent(agent, scale)
+                continue
 
-        # Individual attackers spreading out to fight
-        atk_count = min(12, zone.attacking_soldiers.count)
-
-        for i in range(atk_count):
-            key = f"atk_{zone.territory.id}_{id(zone)}_{i}"
-            angle = i * 1.5 + t * 0.5
-            dist = 30 + math.sin(i * 45) * 10
-            target_x = cx + int(math.cos(angle) * dist)
-            target_y = cy + int(math.sin(angle) * dist)
-
-            if key not in self._unit_positions:
-                self._unit_positions[key] = (
-                    cx + math.cos(angle) * 100,
-                    cy + math.sin(angle) * 100,
+            animation = {
+                "run": "walk",
+                "attack": "attack",
+                "hit": "hit",
+                "idle": "idle",
+            }.get(agent.animation, "idle")
+            facing = 1 if agent.facing[0] >= 0.0 else -1
+            impact = 0.0
+            if animation == "attack":
+                impact = math.exp(
+                    -((agent.animation_time - agent.impact_delay) / 0.045) ** 2
                 )
-            (nx, ny), _, _ = self._smooth_unit_position(key, (target_x, target_y), 4.8)
-
-            attack_phase = t + i * 0.13
-            lunge, impact = _attack_motion(attack_phase)
-            inward_x = math.cos(angle + math.pi)
-            inward_y = math.sin(angle + math.pi)
-            ax = nx + inward_x * lunge
-            ay = ny + inward_y * lunge * 0.55
-            facing = 1 if inward_x > 0 else -1
-            self._draw_unit_sprite(
-                (int(ax), int(ay)),
-                zone.attacker_color,
-                0.8,
-                "soldier",
-                attack_phase,
-                facing,
-                animation="attack",
-                hit_flash=zone.damage_flash * 0.34,
-                impact=impact,
+                if agent.unit_id % fx_stride:
+                    impact = 0.0
+            position = (round(agent.position[0]), round(agent.position[1]))
+            animation_phase = agent.animation_time
+            if animation in ("idle", "walk"):
+                animation_phase += agent.unit_id * 0.031
+            role = (
+                "defender"
+                if agent.unit_type is BattleUnitType.DEFENDER
+                else "soldier"
             )
+            self._draw_unit_sprite(
+                position,
+                agent.color,
+                scale,
+                role,
+                animation_phase,
+                facing,
+                animation=animation,
+                hit_flash=agent.hit_flash,
+                impact=impact,
+                direction=agent.facing,
+                show_crest=living_count <= 120,
+            )
+            if agent.health_ratio < 0.995:
+                self._draw_agent_health(position, agent.health_ratio, scale)
 
-        # Damage flash: shockwave + particles
-        if zone.damage_flash > 0:
-            flash_r = int(18 + zone.damage_flash * 28)
-            flash_surf = pygame.Surface((flash_r * 2 + 8, flash_r * 2 + 8), pygame.SRCALPHA)
-            flash_center = flash_surf.get_rect().center
-            flash_alpha = int(zone.damage_flash * 180)
-            pygame.draw.circle(flash_surf, (255, 228, 88, max(0, min(255, flash_alpha))), flash_center, flash_r, 3)
-            self._screen.blit(flash_surf, flash_surf.get_rect(center=(cx, cy)))
-            # Flying particles
-            for j in range(8):
-                pa = j * math.tau / 8 + t * 2.5
-                pd = 18 + zone.damage_flash * 28
-                px = cx + int(math.cos(pa) * pd)
-                py = cy + int(math.sin(pa) * pd)
-                pc = zone.attacker_color if j % 2 == 0 else (255, 198, 48)
-                r = max(1, int(2 + zone.damage_flash * 3))
-                psf = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
-                pygame.draw.circle(psf, (*pc, max(0, min(255, int(zone.damage_flash * 220)))), (r + 1, r + 1), r)
-                self._screen.blit(psf, (px - r - 1, py - r - 1))
+        impact_budget = max(3, 7 - living_count // 14)
+        for impact in arena.impacts[-impact_budget:]:
+            self._draw_arena_impact(impact, arena.elapsed)
 
-        # Crossed steel marker, with no numeric overlay obscuring the fight.
-        icon_y = cy - 58
-        pygame.draw.line(self._screen, (248, 225, 170), (cx - 8, icon_y - 7), (cx + 8, icon_y + 7), 3)
-        pygame.draw.line(self._screen, (248, 225, 170), (cx + 8, icon_y - 7), (cx - 8, icon_y + 7), 3)
-        pygame.draw.circle(self._screen, (255, 151, 46), (cx, icon_y), 3)
+        if arena.damage_flash > 0.0:
+            radius = 18 + int(arena.damage_flash * 18)
+            flash = pygame.Surface((radius * 2 + 8, radius * 2 + 8), pygame.SRCALPHA)
+            pygame.draw.circle(
+                flash,
+                (255, 219, 119, int(arena.damage_flash * 105)),
+                flash.get_rect().center,
+                radius,
+                2,
+            )
+            self._screen.blit(flash, flash.get_rect(center=(cx, cy)))
+
+    def _draw_fallen_agent(self, agent: object, scale: float) -> None:
+        progress = min(1.0, agent.death_elapsed / DEATH_VISUAL_DURATION)
+        role = (
+            "defender"
+            if agent.unit_type is BattleUnitType.DEFENDER
+            else "soldier"
+        )
+        target_height = max(8, round((60 if role == "defender" else 56) * scale))
+        frame_count = self._art.animation_count(role, "death", agent.facing)
+        frame_index = min(
+            max(0, frame_count - 1),
+            int(progress * max(1, frame_count)),
+        )
+        sprite = self._art.animation_frame(
+            role,
+            "death",
+            frame_index,
+            target_height,
+            agent.facing,
+        )
+        if sprite is None:
+            sprite = self._get_cached_sprite(role, agent.color, scale)
+        if agent.facing[0] >= 0.0:
+            sprite = pygame.transform.flip(sprite, True, False)
+        if frame_count <= 1:
+            angle = (-1 if agent.facing[0] >= 0.0 else 1) * (8 + 70 * _smoothstep(progress))
+            sprite = pygame.transform.rotate(sprite, angle)
+        sprite = sprite.copy()
+        sprite.set_alpha(max(0, int(255 * (1.0 - progress ** 1.8))))
+        x, y = map(int, agent.position)
+        shadow = pygame.Surface((32, 12), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (4, 5, 3, int(75 * (1.0 - progress))), shadow.get_rect())
+        self._screen.blit(shadow, shadow.get_rect(center=(x, y + 7)))
+        self._screen.blit(sprite, sprite.get_rect(midbottom=(x, y + 9)))
+        if progress < 0.42:
+            for index in range(3):
+                angle = agent.unit_id * 0.73 + index * math.tau / 3
+                distance = 5 + progress * 22
+                pygame.draw.circle(
+                    self._screen,
+                    (186, 158, 102),
+                    (
+                        x + int(math.cos(angle) * distance),
+                        y + 6 + int(math.sin(angle) * distance * 0.35),
+                    ),
+                    2,
+                )
+
+    def _draw_agent_health(
+        self,
+        position: tuple[int, int],
+        ratio: float,
+        scale: float,
+    ) -> None:
+        width = max(15, int(24 * scale))
+        rect = pygame.Rect(0, 0, width, 4)
+        rect.midbottom = (position[0], position[1] - max(24, int(44 * scale)))
+        pygame.draw.rect(self._screen, (16, 20, 18), rect, border_radius=2)
+        fill = rect.copy()
+        fill.width = max(1, int(rect.width * max(0.0, min(1.0, ratio))))
+        color = (92, 207, 102) if ratio > 0.5 else (238, 176, 70) if ratio > 0.25 else (218, 72, 62)
+        pygame.draw.rect(self._screen, color, fill, border_radius=2)
+
+    def _draw_arena_impact(self, impact: object, elapsed: float) -> None:
+        x, y = map(int, impact.position)
+        life = max(0.0, min(1.0, impact.ttl / 0.42))
+        if impact.kind == "stone":
+            for index in range(6):
+                angle = index * math.tau / 6 + elapsed
+                distance = 5 + (1.0 - life) * 18
+                point = (
+                    x + int(math.cos(angle) * distance),
+                    y + int(math.sin(angle) * distance * 0.55),
+                )
+                pygame.draw.rect(self._screen, (128, 117, 97), (*point, 3, 3))
+            return
+        if impact.kind == "magic":
+            radius = 5 + int((1.0 - life) * 12)
+            pygame.draw.circle(self._screen, (*impact.color, 255), (x, y), radius, 2)
+            pygame.draw.circle(self._screen, (238, 247, 255), (x, y), 2)
+            return
+
+        radius = 4 + int((1.0 - life) * 9)
+        pygame.draw.circle(self._screen, (225, 235, 238), (x, y), radius, 2)
+        for index in range(5):
+            angle = index * math.tau / 5 + elapsed * 4.0
+            end = (
+                x + int(math.cos(angle) * (radius + 7)),
+                y + int(math.sin(angle) * (radius + 7)),
+            )
+            pygame.draw.line(self._screen, (255, 190, 66), (x, y), end, 1)
 
     def _get_cached_sprite(self, role: str, color: tuple[int, int, int], scale: float) -> pygame.Surface:
         key = f"humanoid_{role}_{color[0]}_{color[1]}_{color[2]}_{scale:.2f}"
         if key in self._sprite_cache:
             return self._sprite_cache[key]
 
-        base_height = {"queen": 76, "worker": 58, "soldier": 56}.get(role, 56)
+        base_height = {
+            "queen": 76,
+            "worker": 58,
+            "soldier": 56,
+            "defender": 60,
+        }.get(role, 56)
         painted = self._art.sprite(role, round(base_height * scale))
         if painted is not None:
             self._sprite_cache[key] = painted
             return painted
-        
+
         base_r = max(6, int((12 if role == "queen" else 8) * scale))
         surf = pygame.Surface((base_r * 6, base_r * 6), pygame.SRCALPHA)
         cx, cy = base_r * 3, base_r * 3
@@ -826,19 +1035,27 @@ class Renderer:
             pygame.draw.ellipse(surf, (255, 215, 0), (cx - base_r, cy - base_r*1.8, base_r*2, base_r*1.2))
             pygame.draw.ellipse(surf, (255, 235, 100), (cx - base_r//2, cy - base_r*1.6, base_r, base_r//2))
 
-        elif role == "soldier":
+        elif role in ("soldier", "defender"):
             # Legs (Armor)
             pygame.draw.rect(surf, _darken(armor_color, 20), (cx - base_r//2, cy + base_r, base_r//2, base_r))
             pygame.draw.rect(surf, _darken(armor_color, 20), (cx + 1, cy + base_r, base_r//2, base_r))
             # Torso (Armor over color)
             pygame.draw.rect(surf, body_color, (cx - base_r, cy, base_r*2, base_r*1.2))
             pygame.draw.rect(surf, armor_color, (cx - base_r//1.2, cy, base_r*1.6, base_r))
-            # Right Arm (Sword)
+            # Right arm and weapon.
             pygame.draw.rect(surf, armor_color, (cx + base_r, cy + 1, base_r//2, base_r))
             sw_x, sw_y = cx + base_r + base_r//4, cy + base_r
-            pygame.draw.line(surf, (192, 192, 192), (sw_x, sw_y), (sw_x, sw_y - base_r * 2), max(2, int(scale*3)))
-            pygame.draw.line(surf, (255, 255, 255), (sw_x - 1, sw_y), (sw_x - 1, sw_y - base_r * 2 + 2), 1)
-            pygame.draw.line(surf, (100, 50, 20), (sw_x - 4, sw_y - 2), (sw_x + 4, sw_y - 2), max(2, int(scale*2))) # Hilt
+            if role == "defender":
+                pygame.draw.line(surf, (116, 78, 42), (sw_x, sw_y + base_r), (sw_x, sw_y - base_r * 3), max(2, int(scale*2)))
+                pygame.draw.polygon(
+                    surf,
+                    (222, 222, 204),
+                    [(sw_x, sw_y - base_r * 3 - 7), (sw_x - 4, sw_y - base_r * 3 + 2), (sw_x + 4, sw_y - base_r * 3 + 2)],
+                )
+            else:
+                pygame.draw.line(surf, (192, 192, 192), (sw_x, sw_y), (sw_x, sw_y - base_r * 2), max(2, int(scale*3)))
+                pygame.draw.line(surf, (255, 255, 255), (sw_x - 1, sw_y), (sw_x - 1, sw_y - base_r * 2 + 2), 1)
+                pygame.draw.line(surf, (100, 50, 20), (sw_x - 4, sw_y - 2), (sw_x + 4, sw_y - 2), max(2, int(scale*2)))
             # Left Arm (Shield)
             pygame.draw.rect(surf, armor_color, (cx - base_r*1.5, cy + 1, base_r//2, base_r))
             sh_rect = pygame.Rect(cx - base_r*2.2, cy, base_r*1.5, base_r*1.8)
@@ -907,9 +1124,10 @@ class Renderer:
             self._draw_shrine_objective(landmark, local, alpha, elapsed)
         self._screen.blit(landmark, landmark.get_rect(center=(cx, cy - 6)))
 
-        if objective.active:
-            for i in range(min(3, objective.soldiers.count)):
-                angle = elapsed * 0.5 + i * math.tau / 3
+        if objective.state is WorldObjectiveState.ACTIVE:
+            guard_count = objective.soldiers.count
+            for i in range(guard_count):
+                angle = elapsed * 0.5 + i * math.tau / max(1, guard_count)
                 gx = cx + int(math.cos(angle) * 42)
                 gy = cy + int(math.sin(angle) * 19) + 10
                 self._draw_unit_sprite(
@@ -921,29 +1139,37 @@ class Renderer:
                     1 if math.cos(angle) >= 0 else -1,
                     animation="idle",
                 )
-            if objective.queen.is_alive:
-                hp_w = 56
-                hp = max(0.0, objective.core_hp)
-                fill = max(1, int(hp_w * hp / objective.core_max_hp))
-                hp_rect = pygame.Rect(cx - hp_w // 2, cy + 49, hp_w, 5)
-                pygame.draw.rect(self._screen, (39, 24, 20), hp_rect, border_radius=2)
-                pygame.draw.rect(self._screen, (226, 157, 61), (hp_rect.x, hp_rect.y, fill, hp_rect.height), border_radius=2)
-                pygame.draw.rect(self._screen, (247, 225, 171), hp_rect, 1, border_radius=2)
+
+        if objective.active and objective.queen.is_alive:
+            hp_w = 56
+            hp = max(0.0, objective.core_hp)
+            fill = max(1, int(hp_w * hp / objective.core_max_hp))
+            hp_y = cy + (104 if state is WorldObjectiveState.CONTESTED else 49)
+            hp_rect = pygame.Rect(cx - hp_w // 2, hp_y, hp_w, 5)
+            pygame.draw.rect(self._screen, (39, 24, 20), hp_rect, border_radius=2)
+            pygame.draw.rect(self._screen, (226, 157, 61), (hp_rect.x, hp_rect.y, fill, hp_rect.height), border_radius=2)
+            pygame.draw.rect(self._screen, (247, 225, 171), hp_rect, 1, border_radius=2)
 
         if state is WorldObjectiveState.TELEGRAPHING:
             status = f"{objective.display_name.upper()} IN {math.ceil(countdown)}"
             status_color = (255, 214, 105)
-        elif objective.active:
-            status = f"{objective.display_name.upper()} {math.ceil(countdown)}s"
+        elif state is WorldObjectiveState.CONTESTED:
+            status = f"{objective.display_name.upper()} CONTESTED"
+            status_color = (255, 179, 86)
+        elif state is WorldObjectiveState.ACTIVE:
+            status = f"{objective.display_name.upper()} READY"
             status_color = (222, 244, 201)
-        elif state is WorldObjectiveState.RESOLVED:
+        else:
             status = "OBJECTIVE CLAIMED"
             status_color = (255, 218, 101)
-        else:
-            status = "OBJECTIVE EXPIRED"
-            status_color = (177, 176, 160)
         text = self._bold_small.render(status, True, status_color)
-        label = pygame.Rect(cx - max(66, text.get_width() // 2 + 10), cy - 82, max(132, text.get_width() + 20), 21)
+        label_y = cy - (126 if state is WorldObjectiveState.CONTESTED else 82)
+        label = pygame.Rect(
+            cx - max(66, text.get_width() // 2 + 10),
+            label_y,
+            max(132, text.get_width() + 20),
+            21,
+        )
         _draw_popup_bg(self._screen, label, ring_color, radius=5)
         self._screen.blit(text, text.get_rect(center=label.center))
 
@@ -1014,12 +1240,25 @@ class Renderer:
         animation: str = "idle",
         hit_flash: float = 0.0,
         impact: float = 0.0,
+        direction: tuple[float, float] | None = None,
+        show_crest: bool = True,
     ) -> None:
-        base_height = {"queen": 76, "worker": 58, "soldier": 56}.get(role, 56)
+        base_height = {
+            "queen": 76,
+            "worker": 58,
+            "soldier": 56,
+            "defender": 60,
+        }.get(role, 56)
         target_height = max(8, round(base_height * scale))
-        frame_count = self._art.animation_count(role, animation)
+        frame_count = self._art.animation_count(role, animation, direction)
         frame_index = _animation_frame_index(role, animation, phase, frame_count)
-        surf = self._art.animation_frame(role, animation, frame_index, target_height)
+        surf = self._art.animation_frame(
+            role,
+            animation,
+            frame_index,
+            target_height,
+            direction,
+        )
         if surf is None:
             surf = self._get_cached_sprite(role, color, scale)
             frame_index = 0
@@ -1085,10 +1324,18 @@ class Renderer:
         self._draw_unit_action_fx((x, y), role, animation, facing, impact, phase, foreground=True)
 
         # Tiny heraldic marker makes team ownership legible in crowded fights.
-        marker_y = rect.top + 4
-        crest = [(x, marker_y), (x + 5, marker_y + 6), (x, marker_y + 12), (x - 5, marker_y + 6)]
-        pygame.draw.polygon(self._screen, _brighten(color, 36), crest)
-        pygame.draw.lines(self._screen, (255, 241, 199), True, crest, 1)
+        if show_crest:
+            marker_y = rect.top + 3
+            crest_radius = max(2, int(round(4.5 * scale)))
+            crest_height = max(5, int(round(10.0 * scale)))
+            crest = [
+                (x, marker_y),
+                (x + crest_radius, marker_y + crest_height // 2),
+                (x, marker_y + crest_height),
+                (x - crest_radius, marker_y + crest_height // 2),
+            ]
+            pygame.draw.polygon(self._screen, _brighten(color, 36), crest)
+            pygame.draw.lines(self._screen, (255, 241, 199), True, crest, 1)
 
     def _draw_unit_action_fx(
         self,
@@ -1139,14 +1386,21 @@ class Renderer:
             self._screen.blit(dust, dust.get_rect(center=(x + facing * 9, y + 8)))
             return
 
-        if role == "soldier" and animation == "attack" and foreground:
+        if role in ("soldier", "defender") and animation == "attack" and foreground:
             slash = pygame.Surface((54, 48), pygame.SRCALPHA)
-            if facing > 0:
+            if role == "defender":
+                start = (12, 27) if facing > 0 else (42, 27)
+                end = (48, 19) if facing > 0 else (6, 19)
+                pygame.draw.line(slash, (255, 239, 183, alpha // 2), start, end, 5)
+                pygame.draw.line(slash, (255, 249, 220, alpha), start, end, 2)
+                points = [start, end]
+            elif facing > 0:
                 points = [(12, 10), (32, 15), (44, 32)]
             else:
                 points = [(42, 10), (22, 15), (10, 32)]
-            pygame.draw.lines(slash, (255, 244, 205, alpha // 3), False, points, 6)
-            pygame.draw.lines(slash, (255, 226, 132, alpha), False, points, 2)
+            if role != "defender":
+                pygame.draw.lines(slash, (255, 244, 205, alpha // 3), False, points, 6)
+                pygame.draw.lines(slash, (255, 226, 132, alpha), False, points, 2)
             impact_point = points[-1]
             for i in range(5):
                 angle = -1.2 + i * 0.6
@@ -1247,7 +1501,11 @@ class Renderer:
             choices = ("soldier", "worker", None)
             choice_index = state_info.get("summon_choice", 0)
             choice = choices[min(max(0, choice_index), len(choices) - 1)]
-            header = self._tiny.render(f"RECRUIT T{territory.id + 1}  {int(territory.food)}g", True, cfg.ACCENT_2)
+            header = self._tiny.render(
+                f"RECRUIT T{territory.id + 1}  {int(territory.food)}g  +{territory.income_per_second:.1f}/s",
+                True,
+                cfg.ACCENT_2,
+            )
             self._screen.blit(header, (x0, y0))
             self._draw_key_option(x0, y0 + 18, keys[0], f"Region T{territory.id + 1}", (161, 203, 231))
             if choice == "soldier":
@@ -1285,9 +1543,9 @@ class Renderer:
         elif state == "attack_amount":
             header = self._tiny.render("HOW MANY?", True, (218, 68, 58))
             self._screen.blit(header, (x0, y0))
-            self._draw_key_option(x0, y0 + 16, keys[0], "33%", (108, 198, 138))
-            self._draw_key_option(x0 + 60, y0 + 16, keys[1], "66%", (218, 188, 58))
-            self._draw_key_option(x0 + 120, y0 + 16, keys[2], "ALL", (218, 68, 48))
+            self._draw_key_option(x0, y0 + 16, keys[0], "0%", cfg.MUTED_TEXT)
+            self._draw_key_option(x0 + 60, y0 + 16, keys[1], "33%", (108, 198, 138))
+            self._draw_key_option(x0 + 120, y0 + 16, keys[2], "66%", (218, 188, 58))
             target = state_info.get("target")
             if target:
                 if isinstance(target, WorldObjective):
@@ -1342,7 +1600,11 @@ class Renderer:
                 return
             territory_id = territory_ids[min(selected, len(territory_ids) - 1)]
             territory = match.territories[territory_id]
-            header = self._tiny.render(f"DEVELOP T{territory.id + 1}  {int(territory.food)}g", True, (163, 223, 190))
+            header = self._tiny.render(
+                f"DEVELOP T{territory.id + 1}  {int(territory.food)}g  +{territory.income_per_second:.1f}/s",
+                True,
+                (163, 223, 190),
+            )
             self._screen.blit(header, (x0, y0))
             current_branch = territory.specialization.name.title()
             current = f"Current: {current_branch} {territory.specialization_level or 'Ruin' if territory.specialization is not TerritorySpecialization.NONE else '-'}"
@@ -1464,9 +1726,8 @@ class Renderer:
             workers = sum(territory.workers.count for territory in owned)
             soldiers += sum(army.soldiers for army in match.armies if army.attacker is player)
             soldiers += sum(
-                zone.attacking_soldiers.count
-                for zone in match.combat_zones
-                if zone.attacker is player
+                arena.commitment_count(player)
+                for arena in match.battles
             )
             stats = (
                 ("gold", gold, (240, 190, 59)),
@@ -1701,6 +1962,13 @@ def _animation_frame_index(role: str, animation: str, phase: float, frame_count:
         return 0
     if animation == "walk":
         return int(phase * (8.5 if role == "queen" else 10.5)) % frame_count
+    if role in ("soldier", "defender") and animation == "idle":
+        return int(phase * 4.0) % frame_count
+    if role in ("soldier", "defender") and animation == "attack":
+        duration = 0.68 if role == "defender" else 0.58
+        return min(frame_count - 1, int(max(0.0, phase) / duration * frame_count))
+    if role in ("soldier", "defender") and animation == "hit":
+        return min(frame_count - 1, int(max(0.0, phase) / 0.16 * frame_count))
 
     duration = 1.08 if animation == "work" else 0.72
     cycle = (phase % duration) / duration
@@ -1715,6 +1983,52 @@ def _animation_frame_index(role: str, animation: str, phase: float, frame_count:
     else:
         frame = 0
     return min(frame, frame_count - 1)
+
+
+def _formation_scale(count: int, marching: bool = False) -> float:
+    """Keep every unit legible while allowing large armies to remain compact."""
+    if count <= 8:
+        return 0.84 if marching else 0.78
+    if count <= 20:
+        return 0.72 if marching else 0.68
+    if count <= 40:
+        return 0.61 if marching else 0.58
+    if count <= 80:
+        return 0.52 if marching else 0.50
+    return 0.44
+
+
+def _formation_slots(
+    front_center: tuple[float, float],
+    count: int,
+    forward: tuple[float, float],
+    scale: float,
+    *,
+    rearward: bool,
+) -> list[tuple[float, float]]:
+    if count <= 0:
+        return []
+    length = max(0.01, math.hypot(*forward))
+    ux, uy = forward[0] / length, forward[1] / length
+    nx, ny = -uy, ux
+    columns = min(14, max(1, math.ceil(math.sqrt(count * 1.45))))
+    lateral_spacing = max(10.0, 22.0 * scale)
+    rank_spacing = max(9.0, 18.0 * scale)
+    direction = -1.0 if rearward else 1.0
+    slots: list[tuple[float, float]] = []
+    for index in range(count):
+        rank = index // columns
+        column = index % columns
+        rank_count = min(columns, count - rank * columns)
+        lateral = (column - (rank_count - 1) / 2.0) * lateral_spacing
+        depth = rank * rank_spacing * direction
+        slots.append(
+            (
+                front_center[0] + nx * lateral + ux * depth,
+                front_center[1] + ny * lateral + uy * depth,
+            )
+        )
+    return slots
 
 
 def _attack_motion(phase: float) -> tuple[float, float]:
@@ -1746,6 +2060,25 @@ def _ease_out_cubic(value: float) -> float:
     return 1.0 - (1.0 - value) ** 3
 
 
+def _defender_patrol_position(
+    territory: Territory,
+    index: int,
+    elapsed: float,
+) -> tuple[tuple[int, int], float]:
+    gate_x, gate_y = territory.battle_position
+    slot_angle = -math.pi * 0.82 + index * math.pi * 0.55
+    patrol = math.sin(elapsed * 0.72 + index * 1.9) * 0.22
+    angle = slot_angle + patrol
+    radius = 38.0 + (index % 2) * 9.0
+    return (
+        (
+            int(gate_x + math.cos(angle) * radius),
+            int(gate_y + 12 + math.sin(angle) * radius * 0.48),
+        ),
+        0.86,
+    )
+
+
 def _wandering_position(territory: Territory, role: str, index: int, elapsed: float) -> tuple[tuple[int, int], float]:
     polygon = territory.polygon
     cx, cy = territory.centroid
@@ -1768,13 +2101,22 @@ def _wandering_position(territory: Territory, role: str, index: int, elapsed: fl
     x = cx + math.cos(orbit) * radius + wobble_x
     y = cy + math.sin(orbit) * radius + wobble_y
 
-    # Ensure it's inside the polygon
+    # Keep patrols on dry ground and out of the castle footprint.
+    castle = territory.battle_position
+    castle_clearance = 48.0 if role == "queen" else 68.0
     for factor in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.3, 0.1):
         px = cx + (x - cx) * factor
         py = cy + (y - cy) * factor
-        if _point_in_polygon((px, py), polygon):
+        if (
+            _point_in_polygon((px, py), polygon)
+            and shared_nearest_river_distance((px, py), WANDERING_RIVER_PATHS)
+            >= WANDERING_RIVER_CLEARANCE
+            and math.dist((px, py), castle) >= castle_clearance
+        ):
             return (int(px), int(py)), 1.0 if role == "queen" else 0.88 if role == "worker" else 0.82
-    return (int(cx), int(cy)), 1.0
+    fallback_x = cx + (castle[0] - cx) * 0.35
+    fallback_y = cy + (castle[1] - cy) * 0.35
+    return (int(fallback_x), int(fallback_y)), 1.0
 
 
 def _decor_point(territory: Territory, seed: int, spread_ratio: float) -> tuple[int, int]:

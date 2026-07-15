@@ -1,8 +1,27 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from quadrant_wars import balance_config as cfg
+
+
+@dataclass(frozen=True)
+class SoldierState:
+    """One persistent soldier travelling between territories and battles."""
+
+    unit_id: int
+    hp: float
+    source_id: int
+
+
+@dataclass(frozen=True)
+class DefenderState:
+    """One persistent Fortress defender while deployed in a territory battle."""
+
+    unit_id: int
+    hp: float
+    source_id: int
 
 
 class Unit(ABC):
@@ -88,6 +107,24 @@ class Unit(ABC):
         self._count -= removed
         self._hp_list = self._hp_list[:self._count]
         return removed
+
+    def detach_hp(self, amount: int) -> list[float]:
+        """Remove units from the back of the stack and preserve their HP."""
+        if amount < 0:
+            raise ValueError("Cannot detach a negative amount")
+        removed = min(self._count, amount)
+        if removed <= 0:
+            return []
+        detached = self._hp_list[-removed:]
+        del self._hp_list[-removed:]
+        self._count -= removed
+        return detached
+
+    def add_with_hp(self, hp_values: list[float]) -> None:
+        """Add individual units without healing survivors during transport."""
+        valid = [max(0.01, min(float(self.max_hp), float(hp))) for hp in hp_values if hp > 0]
+        self._hp_list.extend(valid)
+        self._count += len(valid)
 
     def take_damage(self, damage: float) -> float:
         """Apply damage to front units. Returns actual damage dealt."""
@@ -190,3 +227,25 @@ class Soldier(Unit):
 
     def update(self, dt: float, territory: object) -> None:
         return None
+
+
+class Defender(Unit):
+    @property
+    def max_hp(self) -> int:
+        return cfg.DEFENDER_HP
+
+    @property
+    def atk(self) -> int:
+        return cfg.DEFENDER_ATK
+
+    @property
+    def atk_speed(self) -> float:
+        return cfg.DEFENDER_ATK_SPEED
+
+    @property
+    def combat_value(self) -> int:
+        return cfg.DEFENDER_COMBAT_VALUE
+
+    def update(self, dt: float, territory: object) -> None:
+        if self.is_alive:
+            self.heal_all(cfg.DEFENDER_HP_REGEN * dt)

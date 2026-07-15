@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from typing import Iterable
 
 from quadrant_wars import balance_config as cfg
-from quadrant_wars.core.combat import CombatResolver, CombatZone, CombatResult
+from quadrant_wars.core.battle_arena import (
+    BattleArena,
+    BattleArenaType,
+    BattleOutcome,
+    BattleUnitType,
+)
 from quadrant_wars.core.map_generator import MapGenerator
+from quadrant_wars.core.navigation import BattlefieldNavigator
 from quadrant_wars.core.objective import WorldObjective, WorldObjectiveState, WorldObjectiveType
 from quadrant_wars.core.player import BotPlayer, HumanPlayer, Player, STRATEGIES
 from quadrant_wars.core.territory import DevelopmentResult, Territory, TerritorySpecialization
+from quadrant_wars.core.unit import DefenderState, SoldierState
 
 
 class ArmyTargetType(Enum):
@@ -20,21 +27,75 @@ class ArmyTargetType(Enum):
     RETURN = auto()
 
 
+@dataclass(frozen=True)
+class MatchSetup:
+    player_types: tuple[str, ...]
+    bot_strategy_names: tuple[str | None, ...]
+    seed: int
+
+
+@dataclass(frozen=True)
+class PlayerResult:
+    player_id: int
+    name: str
+    color: tuple[int, int, int]
+    territories: int
+    soldiers: int
+    workers: int
+    defenders: int
+    objectives_claimed: int
+
+
+@dataclass(frozen=True)
+class MatchResult:
+    setup: MatchSetup
+    winner_id: int | None
+    duration: float
+    players: tuple[PlayerResult, ...]
+
+    @property
+    def winner(self) -> PlayerResult | None:
+        return next(
+            (
+                player
+                for player in self.players
+                if player.player_id == self.winner_id
+            ),
+            None,
+        )
+
+
 @dataclass
 class MovingArmy:
     attacker: Player
     source_id: int
     target_type: ArmyTargetType
     target_id: int
-    soldiers: int
+    units: list[SoldierState]
     start: tuple[float, float]
     end: tuple[float, float]
+    path: tuple[tuple[float, float], ...] = ()
     elapsed: float = 0.0
     duration: float = 1.0
+    _segment_lengths: tuple[float, ...] = field(init=False, repr=False)
+    _path_length: float = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if len(self.path) < 2:
+            self.path = (self.start, self.end)
+        self._segment_lengths = tuple(
+            math.dist(start, end)
+            for start, end in zip(self.path, self.path[1:])
+        )
+        self._path_length = max(0.01, sum(self._segment_lengths))
 
     @property
     def targets_territory(self) -> bool:
         return self.target_type is ArmyTargetType.TERRITORY
+
+    @property
+    def soldiers(self) -> int:
+        return len(self.units)
 
     @property
     def progress(self) -> float:
@@ -42,12 +103,64 @@ class MovingArmy:
 
     @property
     def position(self) -> tuple[float, float]:
-        p = self.progress
-        t = p * p * (3.0 - 2.0 * p)
-        return (
-            self.start[0] + (self.end[0] - self.start[0]) * t,
-            self.start[1] + (self.end[1] - self.start[1]) * t,
+        return self._point_at(self.progress)
+
+    @property
+    def heading(self) -> tuple[float, float]:
+        before = self._point_at(max(0.0, self.progress - 0.01))
+        after = self._point_at(min(1.0, self.progress + 0.01))
+        dx = after[0] - before[0]
+        dy = after[1] - before[1]
+        length = max(0.01, math.hypot(dx, dy))
+        return dx / length, dy / length
+
+    @property
+    def path_length(self) -> float:
+        return self._path_length
+
+    def unit_position(self, index: int) -> tuple[float, float]:
+        """Stable formation position for one Soldier along the shared A* path."""
+        if not self.units:
+            return self.position
+        index = max(0, min(index, len(self.units) - 1))
+        columns = max(1, min(16, math.ceil(math.sqrt(len(self.units) * 1.7))))
+        row = index // columns
+        column = index % columns
+        row_count = min(columns, len(self.units) - row * columns)
+        scale = (
+            0.84 if len(self.units) <= 8
+            else 0.72 if len(self.units) <= 20
+            else 0.61 if len(self.units) <= 40
+            else 0.52 if len(self.units) <= 80
+            else 0.44
         )
+        lateral = (column - (row_count - 1) / 2.0) * max(14.0, 25.0 * scale)
+        trailing = row * max(12.0, 22.0 * scale)
+        heading_x, heading_y = self.heading
+        side_x, side_y = -heading_y, heading_x
+        base_x, base_y = self.position
+        return (
+            base_x + side_x * lateral - heading_x * trailing,
+            base_y + side_y * lateral - heading_y * trailing,
+        )
+
+    @property
+    def unit_positions(self) -> tuple[tuple[float, float], ...]:
+        return tuple(self.unit_position(index) for index in range(len(self.units)))
+
+    def _point_at(self, progress: float) -> tuple[float, float]:
+        remaining = max(0.0, min(1.0, progress)) * self._path_length
+        for index, segment_length in enumerate(self._segment_lengths):
+            if remaining <= segment_length or index == len(self._segment_lengths) - 1:
+                ratio = remaining / max(0.01, segment_length)
+                start = self.path[index]
+                end = self.path[index + 1]
+                return (
+                    start[0] + (end[0] - start[0]) * ratio,
+                    start[1] + (end[1] - start[1]) * ratio,
+                )
+            remaining -= segment_length
+        return self.path[-1]
 
     def advance(self, dt: float) -> None:
         self.elapsed += dt * max(0.1, self.attacker.march_speed_multiplier)
@@ -68,12 +181,6 @@ class CombatVisualEffect:
         return min(1.0, self.elapsed / max(0.01, self.duration))
 
 
-@dataclass
-class ObjectiveEngagement:
-    zone: CombatZone
-    army: MovingArmy
-
-
 class Match:
     def __init__(
         self,
@@ -82,45 +189,97 @@ class Match:
         bot_strategy_classes: list[type] | None = None,
         headless: bool = False,
     ) -> None:
+        normalized_player_types = tuple(
+            "human" if player_type.lower() == "human" else "bot"
+            for player_type in player_types
+        )
         self._players: list[Player] = []
-        strategy_rng = random.Random(seed)
+        self._seed = seed if seed is not None else random.SystemRandom().randrange(2**63)
+        strategy_rng = random.Random(self._seed)
         strategy_classes = bot_strategy_classes[:] if bot_strategy_classes else STRATEGIES[:]
         if not bot_strategy_classes:
             strategy_rng.shuffle(strategy_classes)
-        for i, player_type in enumerate(player_types):
+        for i, player_type in enumerate(normalized_player_types):
             color = cfg.PLAYER_COLORS[i]
             if player_type.lower() == "human":
                 self._players.append(HumanPlayer(i, f"Player {i + 1}", color))
             else:
                 strategy = strategy_classes[i % len(strategy_classes)]()
-                self._players.append(BotPlayer(i, f"{strategy.name} Bot {i + 1}", color, strategy))
+                self._players.append(
+                    BotPlayer(
+                        i,
+                        f"{strategy.name} Bot {i + 1}",
+                        color,
+                        strategy,
+                        decision_phase=strategy_rng.random(),
+                    )
+                )
 
-        map_data = MapGenerator().generate(len(self._players), seed=seed)
+        self._setup = MatchSetup(
+            player_types=normalized_player_types,
+            bot_strategy_names=tuple(
+                player.strategy.name if isinstance(player, BotPlayer) else None
+                for player in self._players
+            ),
+            seed=self._seed,
+        )
+
+        map_data = MapGenerator().generate(len(self._players), seed=self._seed)
         self._territories = [
             Territory(i, self._players[i], polygon)
             for i, polygon in enumerate(map_data.polygons)
         ]
+        self._navigator = BattlefieldNavigator(cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT)
         self._armies: list[MovingArmy] = []
-        self._combat_zones: list[CombatZone] = []
+        self._battles: dict[tuple[BattleArenaType, int], BattleArena] = {}
+        self._next_unit_id = 1
         self._effects: list[CombatVisualEffect] = []
         self._sound_events: list[str] = []
         self._winner: Player | None = None
         self._elapsed = 0.0
         self._event_log: list[str] = []
         self._headless = headless
+        self._march_sound_timer = 0.0
+        self._recent_territory_attackers: dict[int, dict[int, float]] = {}
 
-        self._objective_rng = random.Random((seed or 0) ^ 0x0B1EC71)
+        self._objective_rng = random.Random(self._seed ^ 0x0B1EC71)
         self._world_objective: WorldObjective | None = None
         self._objective_id = 0
         self._next_objective_at = cfg.OBJECTIVE_FIRST_ACTIVE_AT
         self._last_objective_type: WorldObjectiveType | None = None
-        self._objective_queue: list[MovingArmy] = []
-        self._objective_engagement: ObjectiveEngagement | None = None
         self._objective_cleanup_at: float | None = None
+        self._claimed_objective_ids: set[int] = set()
+        self._objective_claims_by_player: dict[int, int] = {
+            player.id: 0 for player in self._players
+        }
+
+    @classmethod
+    def from_setup(
+        cls,
+        setup: MatchSetup,
+        *,
+        new_seed: bool = False,
+        headless: bool = False,
+    ) -> "Match":
+        strategy_by_name = {strategy.name: strategy for strategy in STRATEGIES}
+        strategy_classes = [
+            strategy_by_name.get(name or "", STRATEGIES[0])
+            for name in setup.bot_strategy_names
+        ]
+        return cls(
+            setup.player_types,
+            seed=None if new_seed else setup.seed,
+            bot_strategy_classes=strategy_classes,
+            headless=headless,
+        )
 
     @property
     def players(self) -> list[Player]:
         return list(self._players)
+
+    @property
+    def setup(self) -> MatchSetup:
+        return self._setup
 
     @property
     def territories(self) -> list[Territory]:
@@ -131,8 +290,8 @@ class Match:
         return list(self._armies)
 
     @property
-    def combat_zones(self) -> list[CombatZone]:
-        return list(self._combat_zones)
+    def battles(self) -> list[BattleArena]:
+        return list(self._battles.values())
 
     @property
     def effects(self) -> list[CombatVisualEffect]:
@@ -150,7 +309,7 @@ class Match:
         if objective.state is WorldObjectiveState.TELEGRAPHING:
             return max(0.0, self._next_objective_at - self._elapsed)
         if objective.active:
-            return max(0.0, cfg.OBJECTIVE_ACTIVE_DURATION - objective.active_elapsed)
+            return 0.0
         return max(0.0, self._next_objective_at - self._elapsed)
 
     @property
@@ -169,6 +328,53 @@ class Match:
         events = self._sound_events[:]
         self._sound_events.clear()
         return events
+
+    def result_snapshot(self) -> MatchResult:
+        player_results: list[PlayerResult] = []
+        for player in self._players:
+            owned = [territory for territory in self._territories if territory.owner is player]
+            travelling_soldiers = sum(
+                army.soldiers for army in self._armies if army.attacker is player
+            )
+            deployed_soldiers = sum(
+                1
+                for arena in self._battles.values()
+                for agent in arena.living_agents
+                if agent.owner is player
+                and agent.unit_type is BattleUnitType.SOLDIER
+            )
+            deployed_defenders = sum(
+                1
+                for arena in self._battles.values()
+                for agent in arena.living_agents
+                if agent.owner is player
+                and agent.unit_type is BattleUnitType.DEFENDER
+            )
+            player_results.append(
+                PlayerResult(
+                    player_id=player.id,
+                    name=player.name,
+                    color=player.color,
+                    territories=len(owned),
+                    soldiers=(
+                        sum(territory.soldiers.count for territory in owned)
+                        + travelling_soldiers
+                        + deployed_soldiers
+                    ),
+                    workers=sum(territory.workers.count for territory in owned),
+                    defenders=(
+                        sum(territory.defenders.count for territory in owned)
+                        + deployed_defenders
+                    ),
+                    objectives_claimed=self._objective_claims_by_player.get(player.id, 0),
+                )
+            )
+        return MatchResult(
+            setup=self._setup,
+            winner_id=self._winner.id if self._winner is not None else None,
+            duration=self._elapsed,
+            players=tuple(player_results),
+        )
 
     def territories_of(self, player: Player) -> list[Territory]:
         return [t for t in self._territories if t.owner is player and t.queen.is_alive]
@@ -201,7 +407,7 @@ class Match:
             if any(t.owner is player and t.queen.is_alive for t in self._territories):
                 alive.append(player)
             else:
-                player.eliminate()
+                self._check_elimination(player)
         return alive
 
     def territory_at(self, position: tuple[int, int]) -> Territory | None:
@@ -209,6 +415,9 @@ class Match:
             if _point_in_polygon(position, territory.polygon):
                 return territory
         return None
+
+    def territory_in_battle(self, territory_id: int) -> bool:
+        return (BattleArenaType.TERRITORY, territory_id) in self._battles
 
     def develop_territory(
         self,
@@ -221,6 +430,8 @@ class Match:
         territory = self._territories[territory_id]
         if territory.owner is not player:
             return DevelopmentResult(False, None, "You do not control this territory")
+        if (BattleArenaType.TERRITORY, territory.id) in self._battles:
+            return DevelopmentResult(False, None, "Territory is under attack")
         result = territory.develop(specialization)
         if result.success:
             self._event_log.append(f"{player.name} developed T{territory.id + 1}: {result.message}")
@@ -232,20 +443,25 @@ class Match:
             return False
         if not getattr(source.owner, "is_alive", False):
             return False
-        removed = source.remove_soldiers(min(soldiers, source.soldiers.count))
-        if removed <= 0:
+        units = self._assign_unit_ids(
+            source.detach_soldiers(min(soldiers, source.soldiers.count))
+        )
+        if not units:
             return False
+        if target.owner is not source.owner:
+            attackers = self._recent_territory_attackers.setdefault(target.id, {})
+            attackers[source.owner.id] = self._elapsed + cfg.BOT_RECENT_ATTACK_AVOIDANCE
         self._dispatch_army(
             source.owner,
             source.id,
             ArmyTargetType.TERRITORY,
             target.id,
-            removed,
-            source.centroid,
-            target.centroid,
+            units,
+            source.battle_position,
+            target.battle_position,
         )
         target_name = target.owner.name if getattr(target, "owner", None) else "Neutral land"
-        self._event_log.append(f"{source.owner.name} sent {removed} soldiers to {target_name}")
+        self._event_log.append(f"{source.owner.name} sent {len(units)} soldiers to {target_name}")
         self._sound_events.append("attack")
         return True
 
@@ -255,32 +471,92 @@ class Match:
             return False
         if not getattr(source.owner, "is_alive", False):
             return False
-        removed = source.remove_soldiers(min(soldiers, source.soldiers.count))
-        if removed <= 0:
+        units = self._assign_unit_ids(
+            source.detach_soldiers(min(soldiers, source.soldiers.count))
+        )
+        if not units:
             return False
         self._dispatch_army(
             source.owner,
             source.id,
             ArmyTargetType.OBJECTIVE,
             objective.id,
-            removed,
-            source.centroid,
+            units,
+            source.battle_position,
             objective.centroid,
         )
-        self._event_log.append(f"{source.owner.name} sent {removed} soldiers to {objective.display_name}")
+        self._event_log.append(f"{source.owner.name} sent {len(units)} soldiers to {objective.display_name}")
         self._sound_events.append("attack")
         return True
 
-    def has_objective_commitment(self, player: Player) -> bool:
-        if any(
-            army.attacker is player and army.target_type is ArmyTargetType.OBJECTIVE
+    def objective_commitment_count(self, player: Player) -> int:
+        moving = sum(
+            army.soldiers
             for army in self._armies
-        ):
-            return True
-        if any(army.attacker is player for army in self._objective_queue):
-            return True
-        engagement = self._objective_engagement
-        return engagement is not None and engagement.army.attacker is player
+            if army.attacker is player and army.target_type is ArmyTargetType.OBJECTIVE
+        )
+        objective = self._world_objective
+        if objective is None:
+            return moving
+        arena = self._battles.get((BattleArenaType.OBJECTIVE, objective.id))
+        return moving + (arena.commitment_count(player) if arena is not None else 0)
+
+    def territory_commitment_count(self, player: Player, territory_id: int) -> int:
+        moving = sum(
+            army.soldiers
+            for army in self._armies
+            if army.attacker is player
+            and army.targets_territory
+            and army.target_id == territory_id
+        )
+        arena = self._battles.get((BattleArenaType.TERRITORY, territory_id))
+        return moving + (arena.commitment_count(player) if arena is not None else 0)
+
+    def recent_territory_attackers(self, territory_id: int) -> set[int]:
+        attackers = self._recent_territory_attackers.get(territory_id, {})
+        return {
+            player_id
+            for player_id, expires_at in attackers.items()
+            if expires_at > self._elapsed
+        }
+
+    def hostile_territory_commitment_count(
+        self,
+        defender: Player,
+        territory_id: int,
+    ) -> int:
+        moving = sum(
+            army.soldiers
+            for army in self._armies
+            if army.targets_territory
+            and army.target_id == territory_id
+            and army.attacker is not defender
+        )
+        arena = self._battles.get((BattleArenaType.TERRITORY, territory_id))
+        if arena is None:
+            return moving
+        return moving + sum(
+            1
+            for agent in arena.living_agents
+            if not agent.neutral and agent.owner is not defender
+        )
+
+    def offensive_territory_commitment_count(self, player: Player) -> int:
+        moving = sum(
+            army.soldiers
+            for army in self._armies
+            if army.targets_territory
+            and 0 <= army.target_id < len(self._territories)
+            and self._territories[army.target_id].owner is not player
+            and army.attacker is player
+        )
+        battling = sum(
+            arena.commitment_count(player)
+            for arena in self._battles.values()
+            if arena.arena_type is BattleArenaType.TERRITORY
+            and arena.target.owner is not player
+        )
+        return moving + battling
 
     def update(self, dt: float) -> None:
         if self._winner is not None:
@@ -289,7 +565,8 @@ class Match:
         self._update_world_objective(dt)
 
         for territory in self._territories:
-            territory.update(dt)
+            in_combat = (BattleArenaType.TERRITORY, territory.id) in self._battles
+            territory.update(dt, in_combat=in_combat)
         for player in self._players:
             player.update(self, dt)
 
@@ -303,15 +580,21 @@ class Match:
                 self._armies.remove(army)
             self._resolve_arrival(army)
 
-        finished_zones: list[CombatZone] = []
-        for zone in self._combat_zones:
-            result = zone.update(dt)
+        self._march_sound_timer = max(0.0, self._march_sound_timer - dt)
+        if self._armies and self._march_sound_timer <= 0.0 and not self._headless:
+            self._sound_events.append("footstep")
+            self._march_sound_timer = 0.24
+
+        finished_battles: list[tuple[BattleArena, BattleOutcome]] = []
+        for arena in list(self._battles.values()):
+            result = arena.update(dt)
+            arena_sounds = arena.pop_sound_events()
+            if not self._headless:
+                self._sound_events.extend(arena_sounds)
             if result is not None:
-                finished_zones.append(zone)
-        for zone in finished_zones:
-            if zone in self._combat_zones:
-                self._combat_zones.remove(zone)
-            self._resolve_combat_end(zone)
+                finished_battles.append((arena, result))
+        for arena, outcome in finished_battles:
+            self._resolve_battle_end(arena, outcome)
 
         expired: list[CombatVisualEffect] = []
         for effect in self._effects:
@@ -322,9 +605,9 @@ class Match:
             self._effects.remove(effect)
 
         living = self.living_players()
-        if len(living) == 1:
+        if len(living) == 1 and not self._battles:
             self._winner = living[0]
-        elif len(living) == 0:
+        elif len(living) == 0 and not self._battles:
             self._winner = self._players[0]
 
     def _dispatch_army(
@@ -333,11 +616,23 @@ class Match:
         source_id: int,
         target_type: ArmyTargetType,
         target_id: int,
-        soldiers: int,
+        units: list[SoldierState],
         start: tuple[float, float],
         end: tuple[float, float],
     ) -> None:
-        distance = math.hypot(end[0] - start[0], end[1] - start[1])
+        target_territory_id = (
+            target_id
+            if target_type in (ArmyTargetType.TERRITORY, ArmyTargetType.RETURN)
+            else None
+        )
+        path = self._navigator.find_path(
+            start,
+            end,
+            self._territories,
+            source_id=source_id,
+            target_territory_id=target_territory_id,
+        )
+        distance = sum(math.dist(a, b) for a, b in zip(path, path[1:]))
         duration = max(0.6, distance / cfg.SOLDIER_TRAVEL_SPEED)
         self._armies.append(
             MovingArmy(
@@ -345,12 +640,27 @@ class Match:
                 source_id=source_id,
                 target_type=target_type,
                 target_id=target_id,
-                soldiers=soldiers,
+                units=list(units),
                 start=start,
                 end=end,
+                path=path,
                 duration=duration,
             )
         )
+
+    def _assign_unit_ids(
+        self,
+        states: Iterable[SoldierState | DefenderState],
+    ) -> list[SoldierState | DefenderState]:
+        assigned: list[SoldierState | DefenderState] = []
+        for state in states:
+            if state.unit_id > 0:
+                assigned.append(state)
+                self._next_unit_id = max(self._next_unit_id, state.unit_id + 1)
+                continue
+            assigned.append(replace(state, unit_id=self._next_unit_id))
+            self._next_unit_id += 1
+        return assigned
 
     def _resolve_arrival(self, army: MovingArmy) -> None:
         if army.target_type is ArmyTargetType.RETURN:
@@ -365,76 +675,124 @@ class Match:
             return
 
         target = self._territories[army.target_id]
-        if target.owner is army.attacker:
-            target.add_soldiers(army.soldiers)
+        key = (BattleArenaType.TERRITORY, target.id)
+        arena = self._battles.get(key)
+        if arena is not None and arena.captured_pending:
+            self._return_units(army.attacker, army.units, army.position)
+            return
+        if target.owner is army.attacker and key not in self._battles:
+            target.receive_soldiers(army.units)
+            return
+        self._join_territory_battle(army, target)
+
+    def _join_territory_battle(self, army: MovingArmy, target: Territory) -> None:
+        key = (BattleArenaType.TERRITORY, target.id)
+        arena = self._battles.get(key)
+        created = arena is None
+        if arena is None:
+            arena = BattleArena(BattleArenaType.TERRITORY, target)
+            self._battles[key] = arena
+            arena.add_army(
+                army.attacker,
+                army.attacker.color,
+                army.units,
+                army.heading,
+                entry_positions=army.unit_positions,
+            )
+            defenders = self._assign_unit_ids(
+                target.detach_soldiers(target.soldiers.count)
+            )
+            arena.add_army(
+                target.owner,
+                target.owner.color,
+                defenders,
+                neutral=False,
+                defending=True,
+            )
+            fortress_defenders = self._assign_unit_ids(target.detach_defenders())
+            arena.add_defenders(
+                target.owner,
+                target.owner.color,
+                fortress_defenders,
+            )
+        else:
+            arena.add_army(
+                army.attacker,
+                army.attacker.color,
+                army.units,
+                army.heading,
+                entry_positions=army.unit_positions,
+            )
+
+        if created:
+            self._event_log.append(
+                f"Battle! {army.attacker.name} ({army.soldiers}) vs {target.owner.name}"
+            )
+            self._sound_events.append("combat_defend")
+            if any(
+                agent.unit_type is BattleUnitType.DEFENDER
+                for agent in arena.living_agents
+            ):
+                self._sound_events.append("fortress_alarm")
+        else:
+            self._event_log.append(
+                f"{army.attacker.name} reinforced battle T{target.id + 1} (+{army.soldiers})"
+            )
+            self._sound_events.append("battle_reinforce")
+
+    def _resolve_battle_end(self, arena: BattleArena, outcome: BattleOutcome) -> None:
+        key = (arena.arena_type, arena.target_id)
+        if self._battles.get(key) is arena:
+            del self._battles[key]
+        if arena.arena_type is BattleArenaType.OBJECTIVE:
+            self._resolve_objective_battle_end(arena, outcome)
             return
 
-        if self._headless:
-            defender_color = target.owner.color
-            defender_name = target.owner.name
-            result = CombatResolver.resolve_instant(army.soldiers, target, army.attacker)
+        target: Territory = arena.target
+        defender = target.owner
+        if outcome.captured and isinstance(outcome.winner, Player):
+            winner = outcome.winner
+            survivors = outcome.survivors_for(winner)
+            target.reset_after_capture(winner, survivors)
             self._effects.append(
                 CombatVisualEffect(
-                    position=target.centroid,
-                    attacker_color=army.attacker.color,
-                    defender_color=defender_color,
-                    attacker_won=result.attacker_won,
-                    soldiers=army.soldiers,
+                    position=target.battle_position,
+                    attacker_color=winner.color,
+                    defender_color=defender.color,
+                    attacker_won=True,
+                    soldiers=len(survivors),
                 )
             )
-            if result.attacker_won:
-                old_owner = target.owner
-                CombatResolver.apply_result(result, target, army.attacker)
-                self._check_elimination(old_owner)
-                self._event_log.append(
-                    f"{army.attacker.name} conquered {defender_name}; {result.surviving_attackers} survived"
-                )
-                self._sound_events.append("combat_win")
-            else:
-                self._event_log.append(f"{defender_name} defended against {army.attacker.name}")
-                self._sound_events.append("combat_defend")
-            return
-
-        zone = CombatZone(
-            attacker=army.attacker,
-            attacker_color=army.attacker.color,
-            territory=target,
-            soldier_count=army.soldiers,
-        )
-        self._combat_zones.append(zone)
-        self._event_log.append(f"Battle! {army.attacker.name} ({army.soldiers}) vs {target.owner.name}")
-        self._sound_events.append("combat_defend")
-
-    def _resolve_combat_end(self, zone: CombatZone) -> None:
-        if isinstance(zone.territory, WorldObjective):
-            self._resolve_objective_combat_end(zone)
-            return
-        result = zone.result
-        if result is None:
-            return
-        target = zone.territory
-        defender_color = getattr(target.owner, "color", (128, 128, 128))
-        self._effects.append(
-            CombatVisualEffect(
-                position=target.centroid,
-                attacker_color=zone.attacker_color,
-                defender_color=defender_color,
-                attacker_won=result.attacker_won,
-                soldiers=result.surviving_attackers,
-            )
-        )
-        if result.attacker_won:
-            old_owner = target.owner
-            defender_name = getattr(old_owner, "name", "Unknown")
-            CombatResolver.apply_result(result, target, zone.attacker)
-            self._check_elimination(old_owner)
             self._event_log.append(
-                f"{zone.attacker.name} conquered {defender_name}! {result.surviving_attackers} survived"
+                f"{winner.name} conquered {defender.name}; {len(survivors)} survived"
             )
             self._sound_events.append("combat_win")
-        else:
-            self._event_log.append(f"{target.owner.name} repelled {zone.attacker.name}!")
-            self._sound_events.append("combat_defend")
+            self._check_elimination(defender)
+            return
+
+        defenders = outcome.survivors_for(defender)
+        target.receive_soldiers(defenders)
+        deployed_defenders = sum(
+            1
+            for agent in arena.agents
+            if agent.owner is defender
+            and agent.unit_type is BattleUnitType.DEFENDER
+        )
+        target.finish_defense(
+            outcome.defender_survivors_for(defender),
+            deployed_defenders,
+        )
+        self._effects.append(
+            CombatVisualEffect(
+                position=target.battle_position,
+                attacker_color=getattr(outcome.winner, "color", defender.color),
+                defender_color=defender.color,
+                attacker_won=False,
+                soldiers=len(defenders),
+            )
+        )
+        self._event_log.append(f"{defender.name} held territory T{target.id + 1}")
+        self._sound_events.append("combat_defend")
 
     def _update_world_objective(self, dt: float) -> None:
         objective = self._world_objective
@@ -451,14 +809,7 @@ class Match:
                 self._activate_world_objective()
             return
 
-        if objective.active and objective.active_elapsed >= cfg.OBJECTIVE_ACTIVE_DURATION:
-            objective.expire()
-            self._event_log.append(f"{objective.display_name} faded without a winner")
-            self._sound_events.append("objective_expire")
-            self._finish_objective_cycle()
-            return
-
-        if objective.state in (WorldObjectiveState.RESOLVED, WorldObjectiveState.EXPIRED):
+        if objective.state is WorldObjectiveState.RESOLVED:
             if self._objective_cleanup_at is not None and self._elapsed >= self._objective_cleanup_at:
                 self._world_objective = None
                 self._objective_cleanup_at = None
@@ -507,84 +858,99 @@ class Match:
     def _resolve_objective_arrival(self, army: MovingArmy) -> None:
         objective = self._world_objective
         if objective is None or objective.id != army.target_id or not objective.active:
-            self._return_soldiers(army.attacker, army.source_id, army.soldiers, army.position)
+            self._return_units(army.attacker, army.units, army.position)
             return
-        if self._objective_engagement is not None:
-            self._objective_queue.append(army)
-            return
-        self._start_objective_engagement(army)
-
-    def _start_objective_engagement(self, army: MovingArmy) -> None:
-        objective = self._world_objective
-        if objective is None or not objective.active:
-            self._return_soldiers(army.attacker, army.source_id, army.soldiers, army.position)
-            return
-        objective.start_contest()
-        self._event_log.append(f"{army.attacker.name} contests {objective.display_name}")
-        self._sound_events.append("objective_contest")
-        if self._headless:
-            result = CombatResolver.resolve_instant(army.soldiers, objective, army.attacker)
-            self._finish_objective_assault(army, result)
+        key = (BattleArenaType.OBJECTIVE, objective.id)
+        arena = self._battles.get(key)
+        if arena is not None and arena.captured_pending:
+            self._return_units(army.attacker, army.units, army.position)
             return
 
-        zone = CombatZone(
-            attacker=army.attacker,
-            attacker_color=army.attacker.color,
-            territory=objective,
-            soldier_count=army.soldiers,
+        rival_present = arena is not None and any(
+            owner is not army.attacker for owner in arena.player_factions
         )
-        self._objective_engagement = ObjectiveEngagement(zone, army)
-        self._combat_zones.append(zone)
-
-    def _resolve_objective_combat_end(self, zone: CombatZone) -> None:
-        engagement = self._objective_engagement
-        if engagement is None or engagement.zone is not zone or zone.result is None:
-            return
-        self._objective_engagement = None
-        self._finish_objective_assault(engagement.army, zone.result)
-
-    def _finish_objective_assault(self, army: MovingArmy, result: CombatResult) -> None:
-        objective = self._world_objective
-        if objective is None:
-            return
-        self._effects.append(
-            CombatVisualEffect(
-                position=objective.centroid,
-                attacker_color=army.attacker.color,
-                defender_color=objective.owner.color,
-                attacker_won=result.attacker_won,
-                soldiers=result.surviving_attackers,
-            )
-        )
-        if result.attacker_won:
-            CombatResolver.apply_result(result, objective, army.attacker)
-            self._grant_objective_reward(army.attacker, objective)
-            self._return_soldiers(
+        if arena is None:
+            arena = BattleArena(BattleArenaType.OBJECTIVE, objective)
+            self._battles[key] = arena
+            objective.start_contest()
+            arena.add_army(
                 army.attacker,
-                army.source_id,
-                result.surviving_attackers,
-                objective.centroid,
+                army.attacker.color,
+                army.units,
+                army.heading,
+                entry_positions=army.unit_positions,
             )
-            self._event_log.append(f"{army.attacker.name} claimed {objective.display_name}!")
+            guardians = self._assign_unit_ids(
+                objective.detach_soldiers(objective.soldiers.count)
+            )
+            arena.add_army(
+                objective.owner,
+                objective.owner.color,
+                guardians,
+                neutral=True,
+                defending=True,
+            )
+            self._event_log.append(
+                f"{army.attacker.name} contests {objective.display_name}"
+            )
+            self._sound_events.append("objective_contest")
+            return
+
+        arena.add_army(
+            army.attacker,
+            army.attacker.color,
+            army.units,
+            army.heading,
+            entry_positions=army.unit_positions,
+        )
+        self._event_log.append(
+            f"{army.attacker.name} joined {objective.display_name} (+{army.soldiers})"
+        )
+        self._sound_events.append("objective_clash" if rival_present else "battle_reinforce")
+
+    def _resolve_objective_battle_end(
+        self,
+        arena: BattleArena,
+        outcome: BattleOutcome,
+    ) -> None:
+        objective = self._world_objective
+        if objective is None or objective.id != arena.target_id:
+            return
+        if outcome.captured and isinstance(outcome.winner, Player):
+            if objective.id in self._claimed_objective_ids:
+                return
+            winner = outcome.winner
+            survivors = outcome.survivors_for(winner)
+            objective.reset_after_capture(winner, survivors)
+            self._grant_objective_reward(winner, objective)
+            self._return_units(winner, survivors, objective.centroid)
+            self._effects.append(
+                CombatVisualEffect(
+                    position=objective.centroid,
+                    attacker_color=winner.color,
+                    defender_color=objective.owner.color,
+                    attacker_won=True,
+                    soldiers=len(survivors),
+                )
+            )
+            self._event_log.append(f"{winner.name} claimed {objective.display_name}!")
             self._sound_events.append("objective_claim")
             self._finish_objective_cycle()
             return
 
+        guardians = outcome.survivors_for(objective.owner)
+        objective.receive_soldiers(guardians)
         objective.end_contest()
-        self._event_log.append(f"{army.attacker.name} failed to claim {objective.display_name}")
+        self._event_log.append(f"{objective.display_name} resisted every contender")
         self._sound_events.append("combat_defend")
-        self._start_next_objective_assault()
-
-    def _start_next_objective_assault(self) -> None:
-        objective = self._world_objective
-        if objective is None or not objective.active or self._objective_engagement is not None:
-            return
-        if not self._objective_queue:
-            return
-        army = self._objective_queue.pop(0)
-        self._start_objective_engagement(army)
 
     def _grant_objective_reward(self, player: Player, objective: WorldObjective) -> None:
+        if objective.id in self._claimed_objective_ids:
+            return
+        self._claimed_objective_ids.add(objective.id)
+        self._objective_claims_by_player[player.id] = (
+            self._objective_claims_by_player.get(player.id, 0) + 1
+        )
         if objective.objective_type is WorldObjectiveType.CARAVAN:
             home = self.home_territory(player)
             if home is not None:
@@ -599,59 +965,42 @@ class Match:
         objective = self._world_objective
         if objective is None:
             return
-        engagement = self._objective_engagement
-        if engagement is not None:
-            if engagement.zone in self._combat_zones:
-                self._combat_zones.remove(engagement.zone)
-            self._return_soldiers(
-                engagement.army.attacker,
-                engagement.army.source_id,
-                engagement.zone.attacking_soldiers.count,
-                objective.centroid,
-            )
-            self._objective_engagement = None
-
-        for queued_army in self._objective_queue:
-            self._return_soldiers(
-                queued_army.attacker,
-                queued_army.source_id,
-                queued_army.soldiers,
-                objective.centroid,
-            )
-        self._objective_queue.clear()
-
         in_flight = [
             army for army in self._armies
             if army.target_type is ArmyTargetType.OBJECTIVE and army.target_id == objective.id
         ]
         for army in in_flight:
             self._armies.remove(army)
-            self._return_soldiers(army.attacker, army.source_id, army.soldiers, army.position)
+            self._return_units(army.attacker, army.units, army.position)
 
         self._next_objective_at = self._elapsed + cfg.OBJECTIVE_RESPAWN_DELAY
         self._objective_cleanup_at = self._elapsed + cfg.OBJECTIVE_RESULT_DISPLAY_DURATION
 
-    def _return_soldiers(
+    def _return_units(
         self,
         player: Player,
-        source_id: int,
-        soldiers: int,
+        units: Iterable[SoldierState],
         start: tuple[float, float],
     ) -> None:
-        if soldiers <= 0 or not player.is_alive:
+        if not player.is_alive:
             return
-        destination = self._return_destination(player, source_id, start)
-        if destination is None:
-            return
-        self._dispatch_army(
-            player,
-            source_id,
-            ArmyTargetType.RETURN,
-            destination.id,
-            soldiers,
-            start,
-            destination.centroid,
-        )
+        by_source: dict[int, list[SoldierState]] = {}
+        for state in units:
+            if state.hp > 0.0:
+                by_source.setdefault(state.source_id, []).append(state)
+        for source_id, source_units in by_source.items():
+            destination = self._return_destination(player, source_id, start)
+            if destination is None:
+                continue
+            self._dispatch_army(
+                player,
+                source_id,
+                ArmyTargetType.RETURN,
+                destination.id,
+                source_units,
+                start,
+                destination.battle_position,
+            )
 
     def _return_destination(
         self,
@@ -679,7 +1028,11 @@ class Match:
         if 0 <= army.target_id < len(self._territories):
             target = self._territories[army.target_id]
             if target.owner is army.attacker and target.queen.is_alive:
-                target.add_soldiers(army.soldiers)
+                key = (BattleArenaType.TERRITORY, target.id)
+                if key in self._battles:
+                    self._join_territory_battle(army, target)
+                else:
+                    target.receive_soldiers(army.units)
                 return
         fallback = self._return_destination(army.attacker, army.source_id, army.position)
         if fallback is not None and fallback.id != army.target_id:
@@ -688,9 +1041,9 @@ class Match:
                 army.source_id,
                 ArmyTargetType.RETURN,
                 fallback.id,
-                army.soldiers,
+                army.units,
                 army.position,
-                fallback.centroid,
+                fallback.battle_position,
             )
 
     def _check_elimination(self, player: object) -> None:
@@ -699,6 +1052,9 @@ class Match:
         has_territory = any(t.owner is player and t.queen.is_alive for t in self._territories)
         if not has_territory:
             player.eliminate()
+            self._armies = [army for army in self._armies if army.attacker is not player]
+            for arena in self._battles.values():
+                arena.eliminate_owner(player)
             self._event_log.append(f"{player.name} has been eliminated!")
 
 

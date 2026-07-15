@@ -6,11 +6,45 @@ import pygame
 
 from quadrant_wars.core.objective import WorldObjective, WorldObjectiveType
 from quadrant_wars.core.territory import TerritorySpecialization
-from quadrant_wars.game.states import DEVELOPMENT_CHOICES, PlayerMenuState, PlayingState
+from quadrant_wars import balance_config as cfg
+from quadrant_wars.game.states import (
+    DEVELOPMENT_CHOICES,
+    PlayerMenuState,
+    PlayingState,
+    _attack_amount_for_ratio,
+)
 from quadrant_wars.game.game_manager import Match
 
 
 class PlayerStateTest(unittest.TestCase):
+    def test_every_player_starts_with_one_soldier(self) -> None:
+        match = Match(["human"] * 4, seed=2)
+
+        self.assertEqual(cfg.STARTING_SOLDIERS, 1)
+        self.assertTrue(all(territory.soldiers.count == 1 for territory in match.territories))
+
+    def test_attack_percentages_preserve_one_defender(self) -> None:
+        self.assertEqual(_attack_amount_for_ratio(12, 0.0), 0)
+        self.assertEqual(_attack_amount_for_ratio(1, 0.66), 0)
+        self.assertEqual(_attack_amount_for_ratio(6, 0.33), 2)
+        self.assertEqual(_attack_amount_for_ratio(6, 0.66), 4)
+        self.assertEqual(_attack_amount_for_ratio(2, 0.66), 1)
+
+    def test_zero_percent_cancels_without_dispatching_army(self) -> None:
+        state = PlayingState(Match(["human", "bot"], seed=8))
+        player_input = state._player_inputs[0]
+        source = state._match.territories[0]
+        source.add_soldiers(5)
+        player_input.target = state._match.territories[1]
+        player_input.state = PlayerMenuState.ATTACK_AMOUNT
+        before = source.soldiers.count
+
+        state._handle_player_key(player_input, player_input.key1, None)
+
+        self.assertEqual(player_input.state, PlayerMenuState.IDLE)
+        self.assertEqual(source.soldiers.count, before)
+        self.assertEqual(state._match.armies, [])
+
     def test_plain_q_opens_summon_without_ctrl(self) -> None:
         state = PlayingState(Match(["human", "bot"], seed=3))
         q_without_modifier = pygame.event.Event(

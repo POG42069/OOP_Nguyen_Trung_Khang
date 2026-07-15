@@ -18,7 +18,8 @@ def main() -> None:
     pygame.init()
     sound = SoundManager()
     pygame.display.set_caption("Quadrant Wars")
-    screen = pygame.display.set_mode((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT))
+    flags = pygame.SCALED | pygame.RESIZABLE
+    screen = pygame.display.set_mode((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT), flags)
     clock = pygame.time.Clock()
     state = MenuState()
     running = True

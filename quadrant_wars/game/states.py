@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from enum import Enum, auto
 
 import pygame
@@ -8,9 +9,10 @@ from quadrant_wars import balance_config as cfg
 from quadrant_wars.core.objective import WorldObjective
 from quadrant_wars.core.player import HumanPlayer
 from quadrant_wars.core.territory import TerritorySpecialization
-from quadrant_wars.game.game_manager import Match
+from quadrant_wars.game.game_manager import Match, MatchResult
 from quadrant_wars.ui.art import menu_background
 from quadrant_wars.ui.renderer import Renderer
+from quadrant_wars.ui.tutorial import TutorialView
 from quadrant_wars.ui.widgets import Button
 
 
@@ -126,6 +128,13 @@ def _other_territory_indices(home_id: int, total_territories: int) -> list[int]:
     return [i for i in range(total_territories) if i != home_id]
 
 
+def _attack_amount_for_ratio(soldiers: int, ratio: float) -> int:
+    """Convert a percentage into whole units while preserving a defender."""
+    if ratio <= 0.0 or soldiers <= 1:
+        return 0
+    return min(soldiers - 1, max(1, math.ceil(soldiers * ratio)))
+
+
 class GameState:
     def _queue_sound(self, name: str) -> None:
         if not hasattr(self, "_sound_events"):
@@ -148,12 +157,65 @@ class GameState:
         raise NotImplementedError
 
 
+class TransitionState(GameState):
+    """Short fade-through-black that freezes both source and destination."""
+
+    def __init__(
+        self,
+        source: GameState,
+        target: GameState,
+        duration: float = 0.4,
+    ) -> None:
+        self._source = source
+        self._target = target
+        self._duration = max(0.1, duration)
+        self._elapsed = 0.0
+        self._source_frame: pygame.Surface | None = None
+        self._target_frame: pygame.Surface | None = None
+        self._sound_events = source.pop_sound_events()
+
+    @property
+    def target(self) -> GameState:
+        return self._target
+
+    def handle_event(self, event: pygame.event.Event) -> GameState:
+        return self
+
+    def update(self, dt: float) -> GameState:
+        self._elapsed += max(0.0, dt)
+        if self._elapsed >= self._duration:
+            for sound in self.pop_sound_events():
+                self._target._queue_sound(sound)
+            return self._target
+        return self
+
+    def draw(self, screen: pygame.Surface) -> None:
+        if self._source_frame is None:
+            self._source_frame = pygame.Surface(screen.get_size())
+            self._source.draw(self._source_frame)
+        if self._target_frame is None:
+            self._target_frame = pygame.Surface(screen.get_size())
+            self._target.draw(self._target_frame)
+
+        progress = min(1.0, self._elapsed / self._duration)
+        if progress < 0.5:
+            screen.blit(self._source_frame, (0, 0))
+            alpha = int(progress * 2.0 * 255)
+        else:
+            screen.blit(self._target_frame, (0, 0))
+            alpha = int((1.0 - progress) * 2.0 * 255)
+        veil = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        veil.fill((4, 8, 7, max(0, min(255, alpha))))
+        screen.blit(veil, (0, 0))
+
+
 class MenuState(GameState):
     def __init__(self) -> None:
         self._player_count = 4
         self._types = ["Player", "Bot", "Bot", "Bot"]
         self._font: pygame.font.Font | None = None
         self._small: pygame.font.Font | None = None
+        self._tiny: pygame.font.Font | None = None
         self._title: pygame.font.Font | None = None
         self._big: pygame.font.Font | None = None
         self._buttons: list[Button] = []
@@ -161,16 +223,18 @@ class MenuState(GameState):
 
     def _ensure_fonts(self) -> None:
         if self._font is None:
-            self._font = pygame.font.SysFont("segoe ui light", 24)
-            self._small = pygame.font.SysFont("segoe ui light", 18)
-            self._title = pygame.font.SysFont("century gothic", 52, bold=True)
-            self._big = pygame.font.SysFont("century gothic", 32)
+            self._font = pygame.font.SysFont("segoeui", 24)
+            self._small = pygame.font.SysFont("segoeui", 18)
+            self._tiny = pygame.font.SysFont("segoeui", 15)
+            self._title = pygame.font.SysFont("segoeui", 52, bold=True)
+            self._big = pygame.font.SysFont("segoeui", 32)
 
     def _layout(self) -> list[Button]:
         panel_x = 42
         buttons = [
-            Button(pygame.Rect(panel_x, 530, 344, 52), "START BATTLE", "start"),
-            Button(pygame.Rect(panel_x, 596, 344, 42), "EXIT", "exit"),
+            Button(pygame.Rect(panel_x, 518, 344, 50), "BẮT ĐẦU TRẬN", "start"),
+            Button(pygame.Rect(panel_x, 578, 344, 44), "CẨM NANG", "tutorial"),
+            Button(pygame.Rect(panel_x, 634, 344, 40), "THOÁT", "exit"),
         ]
 
         row_x = panel_x
@@ -198,9 +262,10 @@ class MenuState(GameState):
                 self._queue_sound("click")
                 if button.action == "start":
                     types = ["human" if t == "Player" else "bot" for t in self._types[: self._player_count]]
-                    next_state = PlayingState(Match(types))
-                    next_state._queue_sound("click")
-                    return next_state
+                    intro = MatchIntroState(PlayingState(Match(types)))
+                    return TransitionState(self, intro)
+                elif button.action == "tutorial":
+                    return TransitionState(self, TutorialState(self))
                 elif button.action == "exit":
                     import sys
                     sys.exit(0)
@@ -228,7 +293,7 @@ class MenuState(GameState):
         brand_2 = self._big.render("WARS", True, cfg.ACCENT_2)
         screen.blit(brand, (42, 42))
         screen.blit(brand_2, (44, 101))
-        sub = self._small.render("COMMAND THE FRONTIER", True, (183, 194, 187))
+        sub = self._small.render("CHỈ HUY TOÀN CHIẾN TUYẾN", True, (183, 194, 187))
         screen.blit(sub, (45, 151))
         pygame.draw.line(screen, (215, 160, 65), (42, 184), (386, 184), 2)
 
@@ -267,26 +332,217 @@ class MenuState(GameState):
                     pygame.draw.rect(screen, (91, 101, 96), button_rect, 1, border_radius=4)
                     arrow = self._font.render(symbol, True, arr_c)
                     screen.blit(arrow, arrow.get_rect(center=button_rect.center))
-                val_surf = self._small.render(value, True, (255, 247, 224))
+                assert self._tiny is not None
+                val_surf = self._tiny.render(value, True, (255, 247, 224))
                 screen.blit(val_surf, val_surf.get_rect(center=(row_x + 274, y + row_h // 2)))
 
-        draw_row(row_y, "ARMIES", str(self._player_count))
+        draw_row(row_y, "SỐ PHE", str(self._player_count))
 
         for i in range(4):
             y = row_y + spacing * (i + 1)
             if i < self._player_count:
-                p_type = "HUMAN" if self._types[i] == "Player" else "AI BOT"
+                p_type = "NGƯỜI" if self._types[i] == "Player" else "AI BOT"
                 draw_row(y, f"PLAYER {i + 1}", p_type, color=cfg.PLAYER_COLORS[i])
             else:
-                draw_row(y, f"PLAYER {i + 1}", "CLOSED", True, cfg.PLAYER_COLORS[i])
+                draw_row(y, f"PLAYER {i + 1}", "ĐÓNG", True, cfg.PLAYER_COLORS[i])
 
         layout = self._layout()
         layout[0].draw(screen, self._small)
-        exit_button = layout[1]
+        tutorial_button = layout[1]
+        pygame.draw.rect(screen, (34, 43, 41), tutorial_button.rect, border_radius=5)
+        pygame.draw.rect(screen, (177, 144, 76), tutorial_button.rect, 1, border_radius=5)
+        tutorial_text = self._small.render("CẨM NANG", True, (238, 222, 181))
+        screen.blit(tutorial_text, tutorial_text.get_rect(center=tutorial_button.rect.center))
+        exit_button = layout[2]
         pygame.draw.rect(screen, (24, 29, 29), exit_button.rect, border_radius=5)
         pygame.draw.rect(screen, (90, 98, 94), exit_button.rect, 1, border_radius=5)
-        exit_text = self._small.render("EXIT", True, (177, 184, 178))
+        exit_text = self._small.render("THOÁT", True, (177, 184, 178))
         screen.blit(exit_text, exit_text.get_rect(center=exit_button.rect.center))
+
+
+class TutorialState(GameState):
+    def __init__(self, return_state: GameState) -> None:
+        self._return_state = return_state
+        self._view: TutorialView | None = None
+        self._page_index = 0
+        self._elapsed = 0.0
+        self._page_elapsed = 0.18
+        self._scroll = 0.0
+        self._sound_events: list[str] = []
+
+    @property
+    def page_index(self) -> int:
+        return self._page_index
+
+    def _ensure_view(self, screen: pygame.Surface) -> TutorialView:
+        if self._view is None:
+            self._view = TutorialView(screen)
+        else:
+            self._view.bind_surface(screen)
+        return self._view
+
+    def _go_back(self) -> GameState:
+        self._queue_sound("click")
+        return TransitionState(self, self._return_state)
+
+    def _change_page(self, page_index: int) -> None:
+        page_count = len(self._view.pages) if self._view is not None else 5
+        page_index = max(0, min(page_count - 1, page_index))
+        if page_index == self._page_index:
+            return
+        self._page_index = page_index
+        self._page_elapsed = 0.0
+        self._scroll = 0.0
+        self._queue_sound("page_turn")
+
+    def handle_event(self, event: pygame.event.Event) -> GameState:
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                return self._go_back()
+            if event.key in (pygame.K_LEFT, pygame.K_a):
+                self._change_page(self._page_index - 1)
+            elif event.key in (pygame.K_RIGHT, pygame.K_d, pygame.K_RETURN, pygame.K_SPACE):
+                if self._page_index >= 4:
+                    return self._go_back()
+                self._change_page(self._page_index + 1)
+            elif event.key in (pygame.K_UP, pygame.K_PAGEUP):
+                self._scroll = max(0.0, self._scroll - 42.0)
+            elif event.key in (pygame.K_DOWN, pygame.K_PAGEDOWN):
+                self._scroll = min(self._max_scroll(), self._scroll + 42.0)
+        elif event.type == pygame.MOUSEWHEEL:
+            self._scroll = max(
+                0.0,
+                min(self._max_scroll(), self._scroll - event.y * 34.0),
+            )
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self._view is not None:
+            if self._view.back_rect.collidepoint(event.pos):
+                return self._go_back()
+            for index, rect in enumerate(self._view.tab_rects()):
+                if rect.collidepoint(event.pos):
+                    self._change_page(index)
+                    return self
+            if self._view.previous_rect.collidepoint(event.pos):
+                self._change_page(self._page_index - 1)
+            elif self._view.next_rect.collidepoint(event.pos):
+                if self._page_index == len(self._view.pages) - 1:
+                    return self._go_back()
+                self._change_page(self._page_index + 1)
+        return self
+
+    def _max_scroll(self) -> float:
+        if self._view is None:
+            return 170.0
+        return self._view.max_scroll(self._page_index)
+
+    def update(self, dt: float) -> GameState:
+        self._elapsed += max(0.0, dt)
+        self._page_elapsed = min(0.18, self._page_elapsed + max(0.0, dt))
+        return self
+
+    def draw(self, screen: pygame.Surface) -> None:
+        view = self._ensure_view(screen)
+        reveal = _ease_out_cubic(self._page_elapsed / 0.18)
+        view.draw(self._page_index, self._elapsed, reveal, self._scroll)
+
+
+class MatchIntroState(GameState):
+    def __init__(self, playing_state: "PlayingState", duration: float = 2.4) -> None:
+        self._playing = playing_state
+        self._duration = duration
+        self._elapsed = 0.0
+        self._last_token = ""
+        self._sound_events: list[str] = []
+        self._title: pygame.font.Font | None = None
+        self._number: pygame.font.Font | None = None
+        self._small: pygame.font.Font | None = None
+
+    @property
+    def playing_state(self) -> "PlayingState":
+        return self._playing
+
+    def handle_event(self, event: pygame.event.Event) -> GameState:
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self._queue_sound("click")
+            return TransitionState(self, MenuState())
+        return self
+
+    def update(self, dt: float) -> GameState:
+        self._elapsed += max(0.0, dt)
+        token = self._token()
+        if token != self._last_token:
+            if token in ("3", "2", "1"):
+                self._queue_sound("countdown")
+            self._last_token = token
+        if self._elapsed >= self._duration:
+            for sound in self.pop_sound_events():
+                self._playing._queue_sound(sound)
+            self._playing._queue_sound("battle_start")
+            return self._playing
+        return self
+
+    def _token(self) -> str:
+        if self._elapsed < 0.6:
+            return "3"
+        if self._elapsed < 1.2:
+            return "2"
+        if self._elapsed < 1.8:
+            return "1"
+        return "BẮT ĐẦU"
+
+    def draw(self, screen: pygame.Surface) -> None:
+        self._playing.draw(screen)
+        if self._title is None:
+            self._title = pygame.font.SysFont("segoeui", 28, bold=True)
+            self._number = pygame.font.SysFont("segoeui", 76, bold=True)
+            self._small = pygame.font.SysFont("segoeui", 15, bold=True)
+        assert self._title is not None and self._number is not None and self._small is not None
+
+        overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((4, 9, 8, 148))
+        screen.blit(overlay, (0, 0))
+
+        banner = pygame.Rect(250, 142, 780, 418)
+        _draw_glass_panel(screen, banner)
+        eyebrow = self._small.render("TRẬN CHIẾN SẮP BẮT ĐẦU", True, (224, 181, 84))
+        screen.blit(eyebrow, eyebrow.get_rect(center=(cfg.WINDOW_WIDTH // 2, 178)))
+        heading = self._title.render("CÁC VƯƠNG QUỐC ĐÃ SẴN SÀNG", True, (255, 247, 224))
+        screen.blit(heading, heading.get_rect(center=(cfg.WINDOW_WIDTH // 2, 216)))
+
+        players = self._playing._match.players
+        card_w = 164
+        gap = 16
+        total = len(players) * card_w + max(0, len(players) - 1) * gap
+        start_x = cfg.WINDOW_WIDTH // 2 - total // 2
+        for index, player in enumerate(players):
+            rect = pygame.Rect(start_x + index * (card_w + gap), 252, card_w, 78)
+            layer = pygame.Surface(rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(layer, (18, 26, 24, 224), layer.get_rect(), border_radius=6)
+            pygame.draw.rect(layer, (*player.color, 230), (0, 0, 6, rect.height), border_radius=3)
+            pygame.draw.rect(layer, (*_brighten(player.color, 32), 160), layer.get_rect(), 1, border_radius=6)
+            screen.blit(layer, rect)
+            name = self._small.render(_fit_label(self._small, player.name.upper(), card_w - 24), True, (246, 239, 217))
+            screen.blit(name, name.get_rect(center=(rect.centerx + 3, rect.y + 27)))
+            key_label = " / ".join(KEY_LABELS[index]) if index < len(KEY_LABELS) else "AI BOT"
+            if not isinstance(player, HumanPlayer):
+                key_label = "AI BOT"
+            keys = self._small.render(key_label, True, _brighten(player.color, 55))
+            screen.blit(keys, keys.get_rect(center=(rect.centerx + 3, rect.y + 54)))
+
+        token = self._token()
+        token_font = self._number if len(token) == 1 else self._title
+        token_surface = token_font.render(token, True, (255, 221, 126))
+        pulse = 1.0 + math.sin(self._elapsed * 8.0) * 0.025
+        if pulse != 1.0:
+            token_surface = pygame.transform.smoothscale(
+                token_surface,
+                (
+                    max(1, int(token_surface.get_width() * pulse)),
+                    max(1, int(token_surface.get_height() * pulse)),
+                ),
+            )
+        screen.blit(token_surface, token_surface.get_rect(center=(cfg.WINDOW_WIDTH // 2, 438)))
+        hint = self._small.render("Trận đấu chưa tính thời gian trong lúc chuẩn bị", True, (166, 179, 169))
+        screen.blit(hint, hint.get_rect(center=(cfg.WINDOW_WIDTH // 2, 518)))
 
 class PlayingState(GameState):
     def __init__(self, match: Match) -> None:
@@ -387,15 +643,20 @@ class PlayingState(GameState):
                 self._queue_sound("click")
 
         elif pi.state == PlayerMenuState.ATTACK_AMOUNT:
-            ratios = {pi.key1: 0.33, pi.key2: 0.66, pi.key3: 1.0}
+            ratios = {pi.key1: 0.0, pi.key2: 0.33, pi.key3: 0.66}
             ratio = ratios.get(key)
             if ratio is not None and pi.target is not None:
+                if ratio == 0.0:
+                    pi.reset()
+                    self._queue_sound("click")
+                    return
                 success = False
-                # Launch attacks from ALL owned territories!
                 for source in self._match.territories_of(player):
                     if source is pi.target:
-                        continue # Don't attack yourself from yourself
-                    amount = max(1, int(source.soldiers.count * ratio))
+                        continue
+                    amount = _attack_amount_for_ratio(source.soldiers.count, ratio)
+                    if amount <= 0:
+                        continue
                     if isinstance(pi.target, WorldObjective):
                         issued = self._match.issue_objective_attack(source, amount)
                     else:
@@ -498,14 +759,18 @@ class PlayingState(GameState):
                 pi.reset()
         self._sound_events.extend(self._match.pop_sound_events())
         if self._match.winner is not None:
-            game_over = GameOverState(self._match)
-            game_over._sound_events.extend(self.pop_sound_events())
-            return game_over
+            return TransitionState(
+                self,
+                GameOverState(self._match.result_snapshot()),
+                duration=0.6,
+            )
         return self
 
     def draw(self, screen: pygame.Surface) -> None:
         if self._renderer is None:
             self._renderer = Renderer(screen)
+        else:
+            self._renderer.bind_surface(screen)
         player_states = {
             idx: pi.to_dict() for idx, pi in self._player_inputs.items()
         }
@@ -513,61 +778,111 @@ class PlayingState(GameState):
 
 
 class GameOverState(GameState):
-    def __init__(self, match: Match) -> None:
-        self._match = match
-        self._winner_name = match.winner.name if match.winner else "Nobody"
+    def __init__(self, result: MatchResult) -> None:
+        self._result = result
         self._font: pygame.font.Font | None = None
         self._title: pygame.font.Font | None = None
         self._small: pygame.font.Font | None = None
+        self._tiny: pygame.font.Font | None = None
         self._sound_events: list[str] = ["win"]
         self._anim_t = 0.0
+        self._buttons = [
+            Button(pygame.Rect(470, 626, 164, 46), "ĐẤU LẠI", "rematch"),
+            Button(pygame.Rect(650, 626, 164, 46), "MENU CHÍNH", "menu"),
+        ]
+
+    @property
+    def result(self) -> MatchResult:
+        return self._result
 
     def handle_event(self, event: pygame.event.Event) -> GameState:
-        if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
-            return MenuState()
+        for button in self._buttons:
+            if not button.clicked(event):
+                continue
+            self._queue_sound("click")
+            if button.action == "rematch":
+                match = Match.from_setup(self._result.setup, new_seed=True)
+                return TransitionState(self, MatchIntroState(PlayingState(match)))
+            return TransitionState(self, MenuState())
         return self
 
     def update(self, dt: float) -> GameState:
-        self._anim_t += dt
+        self._anim_t += max(0.0, dt)
         return self
 
     def draw(self, screen: pygame.Surface) -> None:
         if self._font is None:
-            self._font = pygame.font.SysFont("segoeui", 24)
-            self._title = pygame.font.SysFont("georgia", 62, bold=True)
+            self._font = pygame.font.SysFont("segoeui", 22, bold=True)
+            self._title = pygame.font.SysFont("segoeui", 48, bold=True)
             self._small = pygame.font.SysFont("segoeui", 16)
-        assert self._font is not None and self._title is not None and self._small is not None
+            self._tiny = pygame.font.SysFont("segoeui", 13, bold=True)
+        assert self._font is not None and self._title is not None and self._small is not None and self._tiny is not None
         _draw_menu_background(screen, self._anim_t)
-        panel = pygame.Rect(290, 170, 700, 340)
+        shade = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        shade.fill((4, 8, 7, 96))
+        screen.blit(shade, (0, 0))
+
+        panel = pygame.Rect(150, 58, 980, 542)
         _draw_glass_panel(screen, panel)
+        winner = self._result.winner
+        winner_color = winner.color if winner is not None else (185, 163, 103)
+        pygame.draw.rect(screen, winner_color, (panel.x, panel.y, panel.width, 7), border_radius=3)
 
-        # Winner color bar
-        winner = self._match.winner
-        if winner:
-            pygame.draw.rect(screen, winner.color, (panel.x, panel.y, panel.width, 6), border_radius=3)
+        crown_center = (cfg.WINDOW_WIDTH // 2, 116)
+        crown = [
+            (crown_center[0] - 28, crown_center[1] + 12),
+            (crown_center[0] - 23, crown_center[1] - 18),
+            (crown_center[0] - 7, crown_center[1] - 2),
+            (crown_center[0], crown_center[1] - 25),
+            (crown_center[0] + 8, crown_center[1] - 2),
+            (crown_center[0] + 24, crown_center[1] - 18),
+            (crown_center[0] + 28, crown_center[1] + 12),
+        ]
+        pygame.draw.polygon(screen, (245, 199, 72), crown)
+        pygame.draw.lines(screen, (255, 232, 143), True, crown, 2)
 
-        # Crown icon
-        crown_y = 218
-        for i, dx in enumerate([-16, -8, 0, 8, 16]):
-            h = 22 if i % 2 == 0 else 14
-            pygame.draw.rect(screen, (248, 208, 48), (cfg.WINDOW_WIDTH // 2 + dx - 4, crown_y - h, 8, h + 8), border_radius=2)
-        pygame.draw.rect(screen, (218, 168, 28), (cfg.WINDOW_WIDTH // 2 - 22, crown_y + 4, 44, 6), border_radius=3)
+        winner_name = winner.name if winner is not None else "KHÔNG CÓ NGƯỜI THẮNG"
+        title = self._title.render(f"{winner_name.upper()} CHIẾN THẮNG", True, (255, 247, 222))
+        reveal = _ease_out_cubic(min(1.0, self._anim_t / 0.8))
+        title.set_alpha(int(255 * reveal))
+        screen.blit(title, title.get_rect(center=(cfg.WINDOW_WIDTH // 2, 173)))
 
-        text = self._title.render(f"{self._winner_name} Wins!", True, (255, 248, 218))
-        screen.blit(text, text.get_rect(center=(cfg.WINDOW_WIDTH // 2, 294)))
+        duration = f"{int(self._result.duration // 60)}:{int(self._result.duration % 60):02d}"
+        duration_text = self._small.render(f"THỜI LƯỢNG TRẬN  {duration}", True, (183, 194, 185))
+        screen.blit(duration_text, duration_text.get_rect(center=(cfg.WINDOW_WIDTH // 2, 214)))
 
-        # Stats
-        time_text = self._font.render(f"Match Duration: {int(self._match.elapsed // 60)}:{int(self._match.elapsed % 60):02d}", True, cfg.MUTED_TEXT)
-        screen.blit(time_text, time_text.get_rect(center=(cfg.WINDOW_WIDTH // 2, 350)))
+        header_y = 254
+        columns = (("VƯƠNG QUỐC", 215), ("VÙNG", 605), ("LÍNH", 703), ("WORKER", 796), ("VỆ BINH", 899), ("MỤC TIÊU", 1010))
+        for label, x in columns:
+            text = self._tiny.render(label, True, (155, 168, 159))
+            screen.blit(text, text.get_rect(center=(x, header_y)))
+        pygame.draw.line(screen, (74, 84, 78), (180, 275), (1100, 275), 1)
 
-        # Territory count
-        if winner:
-            owned = sum(1 for t in self._match.territories if t.owner is winner)
-            terr_text = self._font.render(f"Territories Controlled: {owned}/{len(self._match.territories)}", True, cfg.ACCENT)
-            screen.blit(terr_text, terr_text.get_rect(center=(cfg.WINDOW_WIDTH // 2, 390)))
+        for row, player in enumerate(self._result.players):
+            y = 294 + row * 65
+            row_rect = pygame.Rect(180, y, 920, 52)
+            active = player.player_id == self._result.winner_id
+            layer = pygame.Surface(row_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(layer, (*player.color, 46 if active else 22), layer.get_rect(), border_radius=6)
+            pygame.draw.rect(layer, (*_brighten(player.color, 30), 190 if active else 95), layer.get_rect(), 1, border_radius=6)
+            pygame.draw.rect(layer, (*player.color, 230), (0, 0, 6, row_rect.height), border_radius=3)
+            screen.blit(layer, row_rect)
 
-        hint = self._small.render("Press any key or click to return to menu", True, cfg.MUTED_TEXT)
-        screen.blit(hint, hint.get_rect(center=(cfg.WINDOW_WIDTH // 2, 450)))
+            name = self._small.render(_fit_label(self._small, player.name.upper(), 300), True, (246, 239, 216))
+            screen.blit(name, (row_rect.x + 24, y + 16))
+            values = (
+                (str(player.territories), 605),
+                (str(player.soldiers), 703),
+                (str(player.workers), 796),
+                (str(player.defenders), 899),
+                (str(player.objectives_claimed), 1010),
+            )
+            for value, x in values:
+                value_surface = self._font.render(value, True, (239, 228, 198))
+                screen.blit(value_surface, value_surface.get_rect(center=(x, y + 26)))
+
+        for button in self._buttons:
+            button.draw(screen, self._small)
 
 
 def _draw_menu_background(screen: pygame.Surface, t: float = 0.0) -> None:
@@ -632,40 +947,72 @@ def fast_blur(surface: pygame.Surface, amount: float = 8.0) -> pygame.Surface:
 class PauseState(GameState):
     def __init__(self, playing_state: PlayingState) -> None:
         self._playing = playing_state
-        self._font = pygame.font.SysFont("segoeui", 28, bold=True)
-        self._title = pygame.font.SysFont("georgia", 52, bold=True)
+        self._font = pygame.font.SysFont("segoeui", 19, bold=True)
+        self._title = pygame.font.SysFont("segoeui", 44, bold=True)
+        self._small = pygame.font.SysFont("segoeui", 15)
         self._buttons = [
-            Button(pygame.Rect(540, 300, 200, 50), "Resume", "resume"),
-            Button(pygame.Rect(540, 380, 200, 50), "Restart", "restart"),
-            Button(pygame.Rect(540, 460, 200, 50), "Main Menu", "menu"),
+            Button(pygame.Rect(520, 282, 240, 48), "TIẾP TỤC", "resume"),
+            Button(pygame.Rect(520, 344, 240, 48), "CHƠI LẠI", "restart"),
+            Button(pygame.Rect(520, 406, 240, 48), "CẨM NANG", "tutorial"),
+            Button(pygame.Rect(520, 468, 240, 48), "MENU CHÍNH", "menu"),
+        ]
+        self._confirm_buttons = [
+            Button(pygame.Rect(505, 451, 126, 42), "HỦY", "cancel"),
+            Button(pygame.Rect(649, 451, 126, 42), "XÁC NHẬN", "confirm"),
         ]
         self._bg_cache: pygame.Surface | None = None
         self._sound_events: list[str] = []
+        self._opened = 0.0
+        self._confirm_action: str | None = None
+
+    @property
+    def playing_state(self) -> PlayingState:
+        return self._playing
 
     def handle_event(self, event: pygame.event.Event) -> GameState:
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            return self._playing
+            self._queue_sound("click")
+            if self._confirm_action is not None:
+                self._confirm_action = None
+                return self
+            return _handoff_sounds(self, ResumeCountdownState(self._playing))
+
+        if self._confirm_action is not None:
+            for button in self._confirm_buttons:
+                if not button.clicked(event):
+                    continue
+                self._queue_sound("click")
+                if button.action == "cancel":
+                    self._confirm_action = None
+                    return self
+                if self._confirm_action == "restart":
+                    match = Match.from_setup(self._playing._match.setup)
+                    return TransitionState(
+                        self,
+                        MatchIntroState(PlayingState(match)),
+                    )
+                return TransitionState(self, MenuState())
+            return self
+
         for button in self._buttons:
             if button.clicked(event):
                 self._queue_sound("click")
                 if button.action == "resume":
-                    return self._playing
+                    return _handoff_sounds(self, ResumeCountdownState(self._playing))
                 elif button.action == "restart":
-                    # Restart match with same players
-                    from quadrant_wars.game.game_manager import Match
-                    m = self._playing._match
-                    types = ["human" if getattr(p, "_name", "").startswith("Player") else "bot" for p in m.players]
-                    return PlayingState(Match(types))
+                    self._confirm_action = "restart"
+                elif button.action == "tutorial":
+                    return TransitionState(self, TutorialState(self))
                 elif button.action == "menu":
-                    return MenuState()
+                    self._confirm_action = "menu"
         return self
 
     def update(self, dt: float) -> GameState:
+        self._opened = min(0.18, self._opened + max(0.0, dt))
         return self
 
     def draw(self, screen: pygame.Surface) -> None:
         if self._bg_cache is None:
-            # Capture the current frame and blur it
             temp = pygame.Surface(screen.get_size())
             self._playing.draw(temp)
             self._bg_cache = fast_blur(temp, 10.0)
@@ -674,15 +1021,126 @@ class PauseState(GameState):
 
         # Dim overlay
         overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
-        overlay.fill((10, 10, 15, 120))
+        overlay.fill((7, 11, 11, 148))
         screen.blit(overlay, (0, 0))
 
-        # Pause Panel
-        panel = pygame.Rect(440, 150, 400, 420)
-        _draw_glass_panel(screen, panel)
+        reveal = _ease_out_cubic(self._opened / 0.18)
+        offset_y = int((1.0 - reveal) * 24)
+        menu_layer = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        panel = pygame.Rect(430, 126, 420, 430)
+        _draw_glass_panel(menu_layer, panel)
+        pygame.draw.rect(
+            menu_layer,
+            (201, 159, 70),
+            (panel.x, panel.y, panel.width, 6),
+            border_radius=3,
+        )
 
-        title = self._title.render("PAUSED", True, (255, 248, 228))
-        screen.blit(title, title.get_rect(center=(cfg.WINDOW_WIDTH // 2, 220)))
+        eyebrow = self._small.render("TRẬN ĐẤU ĐANG ĐÓNG BĂNG", True, (184, 164, 111))
+        menu_layer.blit(eyebrow, eyebrow.get_rect(center=(cfg.WINDOW_WIDTH // 2, panel.y + 54)))
+        title = self._title.render("TẠM DỪNG", True, (255, 248, 228))
+        menu_layer.blit(title, title.get_rect(center=(cfg.WINDOW_WIDTH // 2, panel.y + 99)))
+        hint = self._small.render("Esc để tiếp tục với đếm ngược an toàn", True, (159, 171, 163))
+        menu_layer.blit(hint, hint.get_rect(center=(cfg.WINDOW_WIDTH // 2, panel.y + 136)))
 
         for button in self._buttons:
-            button.draw(screen, self._font)
+            button.draw(menu_layer, self._font)
+        menu_layer.set_alpha(max(0, min(255, int(255 * reveal))))
+        screen.blit(menu_layer, (0, offset_y))
+
+        if self._confirm_action is not None:
+            modal_shade = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            modal_shade.fill((2, 5, 5, 142))
+            screen.blit(modal_shade, (0, 0))
+            modal = pygame.Rect(430, 260, 420, 258)
+            _draw_glass_panel(screen, modal)
+            action = "chơi lại từ đầu" if self._confirm_action == "restart" else "rời về Menu chính"
+            heading = self._font.render("XÁC NHẬN THAO TÁC", True, (255, 230, 162))
+            screen.blit(heading, heading.get_rect(center=(modal.centerx, modal.y + 54)))
+            warning = self._small.render(f"Bạn có chắc muốn {action}?", True, (219, 222, 211))
+            screen.blit(warning, warning.get_rect(center=(modal.centerx, modal.y + 104)))
+            detail = self._small.render("Tiến trình của trận hiện tại sẽ không được lưu.", True, (164, 174, 167))
+            screen.blit(detail, detail.get_rect(center=(modal.centerx, modal.y + 137)))
+            for button in self._confirm_buttons:
+                button.draw(screen, self._small)
+
+
+class ResumeCountdownState(GameState):
+    def __init__(self, playing_state: PlayingState, duration: float = 1.8) -> None:
+        self._playing = playing_state
+        self._duration = duration
+        self._elapsed = 0.0
+        self._last_token = ""
+        self._sound_events: list[str] = []
+        self._number = pygame.font.SysFont("segoeui", 72, bold=True)
+        self._title = pygame.font.SysFont("segoeui", 30, bold=True)
+        self._small = pygame.font.SysFont("segoeui", 15, bold=True)
+
+    @property
+    def playing_state(self) -> PlayingState:
+        return self._playing
+
+    def handle_event(self, event: pygame.event.Event) -> GameState:
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self._queue_sound("click")
+            return _handoff_sounds(self, PauseState(self._playing))
+        return self
+
+    def update(self, dt: float) -> GameState:
+        self._elapsed += max(0.0, dt)
+        token = self._token()
+        if token != self._last_token:
+            if token in ("3", "2", "1"):
+                self._queue_sound("countdown")
+            self._last_token = token
+        if self._elapsed >= self._duration:
+            for sound in self.pop_sound_events():
+                self._playing._queue_sound(sound)
+            self._playing._queue_sound("battle_start")
+            return self._playing
+        return self
+
+    def _token(self) -> str:
+        if self._elapsed < 0.55:
+            return "3"
+        if self._elapsed < 1.10:
+            return "2"
+        if self._elapsed < 1.65:
+            return "1"
+        return "TIẾP TỤC"
+
+    def draw(self, screen: pygame.Surface) -> None:
+        self._playing.draw(screen)
+        overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((4, 9, 8, 126))
+        screen.blit(overlay, (0, 0))
+        token = self._token()
+        font = self._number if len(token) == 1 else self._title
+        text = font.render(token, True, (255, 225, 137))
+        screen.blit(text, text.get_rect(center=(cfg.WINDOW_WIDTH // 2, cfg.WINDOW_HEIGHT // 2 - 12)))
+        hint = self._small.render("Trận đấu vẫn đang đóng băng", True, (205, 214, 205))
+        screen.blit(hint, hint.get_rect(center=(cfg.WINDOW_WIDTH // 2, cfg.WINDOW_HEIGHT // 2 + 72)))
+
+
+def _ease_out_cubic(value: float) -> float:
+    value = max(0.0, min(1.0, value))
+    return 1.0 - (1.0 - value) ** 3
+
+
+def _brighten(color: tuple[int, int, int], amount: int) -> tuple[int, int, int]:
+    return tuple(min(255, channel + amount) for channel in color)
+
+
+def _fit_label(font: pygame.font.Font, text: str, width: int) -> str:
+    if font.size(text)[0] <= width:
+        return text
+    suffix = "..."
+    while text and font.size(text + suffix)[0] > width:
+        text = text[:-1]
+    return text + suffix
+
+
+def _handoff_sounds(source: GameState, target: GameState) -> GameState:
+    for sound in source.pop_sound_events():
+        target._queue_sound(sound)
+    return target

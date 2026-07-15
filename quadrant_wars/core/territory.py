@@ -5,7 +5,16 @@ from enum import Enum, auto
 from typing import Iterable
 
 from quadrant_wars import balance_config as cfg
-from quadrant_wars.core.unit import Queen, Soldier, Unit, Worker
+from quadrant_wars.core.battlefield import territory_landmark_position
+from quadrant_wars.core.unit import (
+    Defender,
+    DefenderState,
+    Queen,
+    Soldier,
+    SoldierState,
+    Unit,
+    Worker,
+)
 
 Point = tuple[float, float]
 
@@ -43,10 +52,13 @@ class TerritoryView:
     workers: int
     queen_alive: bool
     food: float
+    income_per_second: float = 0.0
     queen_hp: float = 0.0
     queen_max_hp: int = 0
     specialization: TerritorySpecialization = TerritorySpecialization.NONE
     specialization_level: int = 0
+    defenders: int = 0
+    defender_capacity: int = 0
 
 
 class Territory:
@@ -58,6 +70,8 @@ class Territory:
         self._queen = Queen(cfg.STARTING_QUEENS)
         self._workers = Worker(cfg.STARTING_WORKERS)
         self._soldiers = Soldier(cfg.STARTING_SOLDIERS)
+        self._defenders = Defender(0)
+        self._defender_respawn_timers: list[float] = []
         self._is_capital = True
         self._spawn_queue: list[str] = []
         self._spawn_timer = 0.0
@@ -89,6 +103,11 @@ class Territory:
         return (sum(xs) / len(xs), sum(ys) / len(ys))
 
     @property
+    def battle_position(self) -> Point:
+        """Castle gate used as the shared march and combat destination."""
+        return territory_landmark_position(self._id, self._polygon)
+
+    @property
     def food(self) -> float:
         return self._food
 
@@ -105,12 +124,21 @@ class Territory:
         return self._soldiers
 
     @property
+    def defenders(self) -> Defender:
+        return self._defenders
+
+    @property
     def units(self) -> list[Unit]:
-        return [self._queen, self._workers, self._soldiers]
+        return [self._queen, self._workers, self._soldiers, self._defenders]
 
     @property
     def hp(self) -> int:
-        return self._queen.count + self._workers.count + self._soldiers.count
+        return (
+            self._queen.count
+            + self._workers.count
+            + self._soldiers.count
+            + self._defenders.count
+        )
 
     @property
     def is_capital(self) -> bool:
@@ -147,6 +175,33 @@ class Territory:
         return 1.0
 
     @property
+    def worker_cost_multiplier(self) -> float:
+        if self._specialization is TerritorySpecialization.ECONOMY:
+            return max(
+                0.1,
+                1.0 - cfg.ECONOMY_WORKER_DISCOUNT_PER_LEVEL * self._specialization_level,
+            )
+        return 1.0
+
+    @property
+    def base_income_per_second(self) -> float:
+        return cfg.BASE_TERRITORY_INCOME_PER_SECOND
+
+    @property
+    def worker_income_per_second(self) -> float:
+        return (
+            self._workers.count
+            * cfg.FOOD_PER_WORKER_PER_SECOND
+            * self.worker_income_multiplier
+        )
+
+    @property
+    def income_per_second(self) -> float:
+        if not self.can_recruit:
+            return 0.0
+        return self.base_income_per_second + self.worker_income_per_second
+
+    @property
     def soldier_cost(self) -> int:
         discount = 0
         if self._specialization is TerritorySpecialization.BARRACKS:
@@ -168,16 +223,30 @@ class Territory:
         return max(0.1, 1.0 - reduction)
 
     @property
-    def queen_regen_multiplier(self) -> float:
-        if self._specialization is TerritorySpecialization.FORTRESS:
-            return 1.0 + cfg.FORTRESS_QUEEN_REGEN_BONUS_PER_LEVEL * self._specialization_level
-        return 1.0
+    def defender_capacity(self) -> int:
+        if (
+            self._specialization is TerritorySpecialization.FORTRESS
+            and self._specialization_level > 0
+        ):
+            return cfg.FORTRESS_DEFENDERS_PER_LEVEL * self._specialization_level
+        return 0
+
+    @property
+    def defender_respawn_count(self) -> int:
+        return len(self._defender_respawn_timers)
+
+    @property
+    def next_defender_respawn(self) -> float | None:
+        if not self._defender_respawn_timers:
+            return None
+        return min(self._defender_respawn_timers)
 
     @property
     def defense_value(self) -> float:
         """Total defense strength - sum of all unit HP for bot evaluation."""
         raw = (
             self._soldiers.total_hp
+            + self._defenders.total_hp
             + self._workers.total_hp
             + (self._queen.total_hp if self._queen.is_alive else 0)
         )
@@ -188,6 +257,7 @@ class Territory:
         """Legacy combat-value based defense for bot ratio calculations."""
         raw = (
             self._soldiers.total_combat_value
+            + self._defenders.total_combat_value
             + self._workers.total_combat_value
             + (self._queen.total_combat_value if self._queen.is_alive else 0)
         )
@@ -205,10 +275,13 @@ class Territory:
             workers=self._workers.count,
             queen_alive=self._queen.is_alive,
             food=self._food,
+            income_per_second=self.income_per_second,
             queen_hp=self._queen.front_hp if self._queen.is_alive else 0.0,
             queen_max_hp=cfg.QUEEN_HP,
             specialization=self._specialization,
             specialization_level=self._specialization_level,
+            defenders=self._defenders.count,
+            defender_capacity=self.defender_capacity,
         )
 
     def add_food(self, amount: float) -> None:
@@ -222,7 +295,10 @@ class Territory:
         return False
 
     def worker_cost(self) -> int:
-        return int(round(cfg.WORKER_BASE_COST * (cfg.WORKER_COST_GROWTH ** self._workers.count)))
+        normal_cost = cfg.WORKER_BASE_COST * (
+            cfg.WORKER_COST_GROWTH ** self._workers.count
+        )
+        return max(1, int(round(normal_cost * self.worker_cost_multiplier)))
 
     def can_buy_worker(self) -> bool:
         if not self.can_recruit:
@@ -283,8 +359,19 @@ class Territory:
             return DevelopmentResult(False, quote, quote.reason)
         if not self.spend_food(quote.cost):
             return DevelopmentResult(False, quote, "Not enough local gold")
+        previous_specialization = self._specialization
+        previous_capacity = self.defender_capacity
         self._specialization = specialization
         self._specialization_level = quote.resulting_level
+        if specialization is TerritorySpecialization.FORTRESS:
+            if previous_specialization is not TerritorySpecialization.FORTRESS:
+                self._defenders.remove(self._defenders.count)
+                self._defender_respawn_timers.clear()
+            added_slots = max(0, self.defender_capacity - previous_capacity)
+            self._defenders.add(added_slots)
+        elif previous_specialization is TerritorySpecialization.FORTRESS:
+            self._defenders.remove(self._defenders.count)
+            self._defender_respawn_timers.clear()
         branch = specialization.name.title()
         return DevelopmentResult(True, quote, f"{branch} level {quote.resulting_level} ready")
 
@@ -318,15 +405,61 @@ class Territory:
     def add_soldiers(self, amount: int) -> None:
         self._soldiers.add(amount)
 
-    def update(self, dt: float) -> None:
+    def detach_soldiers(self, amount: int) -> list[SoldierState]:
+        return [
+            SoldierState(unit_id=-1, hp=hp, source_id=self._id)
+            for hp in self._soldiers.detach_hp(amount)
+        ]
+
+    def receive_soldiers(self, soldiers: Iterable[SoldierState]) -> None:
+        self._soldiers.add_with_hp([soldier.hp for soldier in soldiers])
+
+    def detach_defenders(self) -> list[DefenderState]:
+        return [
+            DefenderState(unit_id=-1, hp=hp, source_id=self._id)
+            for hp in self._defenders.detach_hp(self._defenders.count)
+        ]
+
+    def finish_defense(
+        self,
+        survivors: Iterable[DefenderState],
+        deployed_count: int,
+    ) -> None:
+        states = list(survivors)
+        self._defenders.add_with_hp([state.hp for state in states])
+        casualties = max(0, int(deployed_count) - len(states))
+        available_slots = max(
+            0,
+            self.defender_capacity
+            - self._defenders.count
+            - len(self._defender_respawn_timers),
+        )
+        self._defender_respawn_timers.extend(
+            [cfg.DEFENDER_RESPAWN_DELAY] * min(casualties, available_slots)
+        )
+
+    def update(self, dt: float, in_combat: bool = False) -> None:
         if not self.can_recruit:
+            return
+        self.add_food(self.base_income_per_second * dt)
+        if in_combat:
+            self._spawn_effects = [t - dt for t in self._spawn_effects if t - dt > 0]
+            for visual_spawn in self._visual_spawns:
+                visual_spawn["progress"] += dt / 2.0
+            self._visual_spawns = [
+                visual_spawn
+                for visual_spawn in self._visual_spawns
+                if visual_spawn["progress"] < 1.0
+            ]
             return
         for unit in self.units:
             unit.update(dt, self)
 
+        self._update_defender_respawns(dt)
+
         # Capital queen regens faster
         if self._is_capital and self._queen.is_alive:
-            extra_regen = cfg.CAPITAL_REGEN_BONUS * self.queen_regen_multiplier * dt
+            extra_regen = cfg.CAPITAL_REGEN_BONUS * dt
             if self._queen.front_hp < self._queen.max_hp:
                 self._queen.heal(extra_regen)
 
@@ -361,14 +494,46 @@ class Territory:
                 else:
                     self._spawn_timer = 0.0
 
+    def _update_defender_respawns(self, dt: float) -> None:
+        if self.defender_capacity <= 0:
+            self._defender_respawn_timers.clear()
+            return
+        remaining: list[float] = []
+        respawned = 0
+        for timer in self._defender_respawn_timers:
+            next_timer = timer - dt
+            if next_timer <= 0.0 and self._defenders.count + respawned < self.defender_capacity:
+                respawned += 1
+            else:
+                remaining.append(max(0.0, next_timer))
+        self._defender_respawn_timers = remaining
+        if respawned:
+            start_index = self._defenders.count
+            self._defenders.add(respawned)
+            for offset in range(respawned):
+                self._visual_spawns.append(
+                    {
+                        "role": "defender",
+                        "progress": 0.0,
+                        "index": start_index + offset,
+                    }
+                )
+            self._spawn_effects.extend([1.0] * respawned)
+
     def eliminate_command_units(self) -> None:
         self._queen.remove(self._queen.count)
         self._workers.remove(self._workers.count)
+        self._defenders.remove(self._defenders.count)
+        self._defender_respawn_timers.clear()
         self._spawn_queue.clear()
         self._visual_spawns.clear()
         self._food = 0.0
 
-    def reset_after_capture(self, new_owner: object, surviving_soldiers: int) -> None:
+    def reset_after_capture(
+        self,
+        new_owner: object,
+        surviving_soldiers: int | Iterable[SoldierState],
+    ) -> None:
         """Capture territory: new owner gets queen + survivors + workers + bonus food."""
         self._owner = new_owner
         # Kill old queen, spawn new one for new owner
@@ -377,7 +542,10 @@ class Territory:
         # Keep existing workers (reward for conquering!)
         # Reset soldiers to survivors
         self._soldiers.remove(self._soldiers.count)
-        self._soldiers.add(surviving_soldiers)
+        if isinstance(surviving_soldiers, int):
+            self._soldiers.add(surviving_soldiers)
+        else:
+            self.receive_soldiers(surviving_soldiers)
         # Bonus food for conquering
         self._food = cfg.CAPTURE_FOOD_BONUS
         # Captured territory is not capital
@@ -385,5 +553,14 @@ class Territory:
         self._spawn_queue.clear()
         self._visual_spawns.clear()
         self._spawn_timer = 0.0
+        self._defenders.remove(self._defenders.count)
+        self._defender_respawn_timers.clear()
         if self._specialization is not TerritorySpecialization.NONE:
             self._specialization_level = max(0, self._specialization_level - 1)
+        if (
+            self._specialization is TerritorySpecialization.FORTRESS
+            and self._specialization_level > 0
+        ):
+            self._defender_respawn_timers = [
+                cfg.DEFENDER_RESPAWN_DELAY
+            ] * self.defender_capacity

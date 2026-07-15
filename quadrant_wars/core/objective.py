@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from enum import Enum, auto
+from typing import Iterable
 
 from quadrant_wars import balance_config as cfg
-from quadrant_wars.core.unit import Queen, Soldier, Worker
+from quadrant_wars.core.unit import Queen, Soldier, SoldierState, Worker
 
 
 class WorldObjectiveType(Enum):
@@ -17,7 +18,6 @@ class WorldObjectiveState(Enum):
     ACTIVE = auto()
     CONTESTED = auto()
     RESOLVED = auto()
-    EXPIRED = auto()
 
 
 class NeutralGuardian:
@@ -28,7 +28,7 @@ class NeutralGuardian:
 
 
 class WorldObjective:
-    """A temporary neutral combat target that never becomes territory."""
+    """A persistent neutral combat target that never becomes territory."""
 
     def __init__(
         self,
@@ -46,7 +46,6 @@ class WorldObjective:
         self._workers = Worker(0)
         self._soldiers = Soldier(cfg.OBJECTIVE_GUARDS)
         self._elapsed = 0.0
-        self._active_elapsed = 0.0
         self._captured_by: object | None = None
         self._surviving_attackers = 0
 
@@ -69,10 +68,6 @@ class WorldObjective:
     @property
     def elapsed(self) -> float:
         return self._elapsed
-
-    @property
-    def active_elapsed(self) -> float:
-        return self._active_elapsed
 
     @property
     def centroid(self) -> tuple[float, float]:
@@ -133,13 +128,10 @@ class WorldObjective:
 
     def update(self, dt: float) -> None:
         self._elapsed += dt
-        if self.active:
-            self._active_elapsed += dt
 
     def activate(self) -> None:
         if self._state is WorldObjectiveState.TELEGRAPHING:
             self._state = WorldObjectiveState.ACTIVE
-            self._active_elapsed = 0.0
 
     def start_contest(self) -> None:
         if self.active:
@@ -149,17 +141,29 @@ class WorldObjective:
         if self._state is WorldObjectiveState.CONTESTED:
             self._state = WorldObjectiveState.ACTIVE
 
-    def expire(self) -> None:
-        if self._state not in (WorldObjectiveState.RESOLVED, WorldObjectiveState.EXPIRED):
-            self._state = WorldObjectiveState.EXPIRED
-
     def add_soldiers(self, amount: int) -> None:
         self._soldiers.add(amount)
 
     def remove_soldiers(self, amount: int) -> int:
         return self._soldiers.remove(amount)
 
-    def reset_after_capture(self, new_owner: object, surviving_soldiers: int) -> None:
+    def detach_soldiers(self, amount: int) -> list[SoldierState]:
+        return [
+            SoldierState(unit_id=-1, hp=hp, source_id=-1)
+            for hp in self._soldiers.detach_hp(amount)
+        ]
+
+    def receive_soldiers(self, soldiers: Iterable[SoldierState]) -> None:
+        self._soldiers.add_with_hp([soldier.hp for soldier in soldiers])
+
+    def reset_after_capture(
+        self,
+        new_owner: object,
+        surviving_soldiers: int | Iterable[SoldierState],
+    ) -> None:
         self._captured_by = new_owner
-        self._surviving_attackers = surviving_soldiers
+        if isinstance(surviving_soldiers, int):
+            self._surviving_attackers = surviving_soldiers
+        else:
+            self._surviving_attackers = sum(1 for _ in surviving_soldiers)
         self._state = WorldObjectiveState.RESOLVED
