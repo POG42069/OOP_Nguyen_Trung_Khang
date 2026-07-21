@@ -1,26 +1,20 @@
-from __future__ import annotations
-
 import random
-from dataclasses import dataclass
 
 from quadrant_wars import balance_config as cfg
 
-Point = tuple[float, float]
-
-
-@dataclass(frozen=True)
 class MapData:
-    polygons: list[list[Point]]
+    def __init__(self, polygons):
+        self.polygons = polygons
 
 
 class MapGenerator:
     """Generates balanced contiguous regions without external geometry packages."""
 
-    def __init__(self, width: int = cfg.WINDOW_WIDTH, height: int = cfg.WINDOW_HEIGHT) -> None:
+    def __init__(self, width=cfg.WINDOW_WIDTH, height=cfg.WINDOW_HEIGHT):
         self._width = width
         self._height = height
 
-    def generate(self, player_count: int, seed: int | None = None) -> MapData:
+    def generate(self, player_count, seed=None):
         if not cfg.MIN_PLAYERS <= player_count <= cfg.MAX_PLAYERS:
             raise ValueError("player_count must be between 2 and 4")
         rng = random.Random(seed)

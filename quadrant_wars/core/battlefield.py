@@ -1,17 +1,14 @@
-from __future__ import annotations
 
 import math
 from collections.abc import Iterable
 
 from quadrant_wars import balance_config as cfg
 
-Point = tuple[float, float]
-
 RIVER_BUILDING_CLEARANCE = 120.0
 RIVER_NAVIGATION_CLEARANCE = 54.0
 
 
-def river_flow_paths(viewport: tuple[int, int]) -> list[list[Point]]:
+def river_flow_paths(viewport):
     """Return the shared visual/gameplay centre lines of the map rivers."""
     width, height = viewport
     normalized = (
@@ -24,11 +21,11 @@ def river_flow_paths(viewport: tuple[int, int]) -> list[list[Point]]:
 
 
 def territory_landmark_position(
-    territory_id: int,
-    polygon: Iterable[Point],
-    seed: int = 7,
-    spread_ratio: float = 0.28,
-) -> Point:
+    territory_id,
+    polygon,
+    seed = 7,
+    spread_ratio = 0.28,
+):
     """Choose the deterministic interior position shared by a castle and combat."""
     points = list(polygon)
     cx = sum(point[0] for point in points) / len(points)
@@ -47,7 +44,7 @@ def territory_landmark_position(
     return cx, cy
 
 
-def specialization_site_position(territory: object) -> Point:
+def specialization_site_position(territory):
     """Choose a stable construction site clear of both castle and rivers."""
     capital = territory_landmark_position(territory.id, territory.polygon)
     candidates = specialization_site_candidates(territory)
@@ -56,10 +53,10 @@ def specialization_site_position(territory: object) -> Point:
 
     paths = river_flow_paths((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT))
 
-    def capital_distance(point: Point) -> float:
+    def capital_distance(point):
         return math.dist(point, capital)
 
-    def river_distance(point: Point) -> float:
+    def river_distance(point):
         return nearest_river_distance(point, paths)
 
     dry = [
@@ -72,9 +69,9 @@ def specialization_site_position(territory: object) -> Point:
     return max(candidates, key=lambda point: (river_distance(point), capital_distance(point)))
 
 
-def specialization_site_candidates(territory: object) -> list[Point]:
+def specialization_site_candidates(territory):
     cx, cy = territory.centroid
-    candidates: list[Point] = []
+    candidates = []
     for vx, vy in territory.polygon:
         for factor in (0.34, 0.48):
             point = (cx + (vx - cx) * factor, cy + (vy - cy) * factor)
@@ -87,8 +84,8 @@ def specialization_site_candidates(territory: object) -> list[Point]:
     return candidates
 
 
-def nearest_river_distance(point: Point, river_paths: Iterable[Iterable[Point]]) -> float:
-    distances: list[float] = []
+def nearest_river_distance(point, river_paths):
+    distances = []
     for path_iterable in river_paths:
         path = list(path_iterable)
         distances.extend(
@@ -98,7 +95,7 @@ def nearest_river_distance(point: Point, river_paths: Iterable[Iterable[Point]])
     return min(distances, default=math.inf)
 
 
-def point_to_segment_distance(point: Point, start: Point, end: Point) -> float:
+def point_to_segment_distance(point, start, end):
     px, py = point
     sx, sy = start
     ex, ey = end
@@ -111,7 +108,7 @@ def point_to_segment_distance(point: Point, start: Point, end: Point) -> float:
     return math.hypot(px - (sx + dx * ratio), py - (sy + dy * ratio))
 
 
-def point_in_polygon(point: Point, polygon: Iterable[Point]) -> bool:
+def point_in_polygon(point, polygon):
     points = list(polygon)
     x, y = point
     inside = False

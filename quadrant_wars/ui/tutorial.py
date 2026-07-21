@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 import math
-from dataclasses import dataclass
 
 import pygame
 
@@ -9,17 +6,20 @@ from quadrant_wars import balance_config as cfg
 from quadrant_wars.ui.art import ArtAssets, menu_background
 
 
-@dataclass(frozen=True)
 class TutorialPage:
-    nav_label: str
-    title: str
-    kicker: str
-    bullets: tuple[str, ...]
-    accent: tuple[int, int, int]
-    preview: str
+    def __init__(self, nav_label, title, kicker, bullets, accent, preview):
+        self.nav_label = nav_label
+        self.title = title
+        self.kicker = kicker
+        self.bullets = bullets
+        self.accent = accent
+        self.preview = preview
+
+    def __eq__(self, other):
+        return isinstance(other, TutorialPage) and vars(self) == vars(other)
 
 
-def tutorial_pages() -> tuple[TutorialPage, ...]:
+def tutorial_pages():
     return (
         TutorialPage(
             "LUẬT CHƠI",
@@ -91,7 +91,7 @@ def tutorial_pages() -> tuple[TutorialPage, ...]:
 
 
 class TutorialView:
-    def __init__(self, screen: pygame.Surface) -> None:
+    def __init__(self, screen):
         self._screen = screen
         self._art = ArtAssets(screen.get_size())
         self._title = pygame.font.SysFont("segoeui", 36, bold=True)
@@ -102,14 +102,14 @@ class TutorialView:
         self._pages = tutorial_pages()
 
     @property
-    def pages(self) -> tuple[TutorialPage, ...]:
+    def pages(self):
         return self._pages
 
     @property
-    def target_surface(self) -> pygame.Surface:
+    def target_surface(self):
         return self._screen
 
-    def bind_surface(self, screen: pygame.Surface) -> None:
+    def bind_surface(self, screen):
         if screen is self._screen:
             return
         if screen.get_size() != self._screen.get_size():
@@ -117,24 +117,24 @@ class TutorialView:
         self._screen = screen
 
     @property
-    def back_rect(self) -> pygame.Rect:
+    def back_rect(self):
         return pygame.Rect(40, 648, 172, 42)
 
     @property
-    def previous_rect(self) -> pygame.Rect:
+    def previous_rect(self):
         return pygame.Rect(1040, 648, 62, 42)
 
     @property
-    def next_rect(self) -> pygame.Rect:
+    def next_rect(self):
         return pygame.Rect(1114, 648, 126, 42)
 
-    def tab_rects(self) -> tuple[pygame.Rect, ...]:
+    def tab_rects(self):
         return tuple(
             pygame.Rect(40, 150 + index * 78, 236, 58)
             for index in range(len(self._pages))
         )
 
-    def max_scroll(self, page_index: int) -> float:
+    def max_scroll(self, page_index):
         body_height = 0
         for bullet in self._pages[page_index].bullets:
             body_height += len(_wrap_text(self._body, bullet, 322)) * 23 + 17
@@ -142,11 +142,11 @@ class TutorialView:
 
     def draw(
         self,
-        page_index: int,
-        elapsed: float,
-        reveal: float,
-        scroll: float,
-    ) -> None:
+        page_index,
+        elapsed,
+        reveal,
+        scroll,
+    ):
         background = menu_background(self._screen.get_size())
         if background is not None:
             self._screen.blit(background, (0, 0))
@@ -207,7 +207,7 @@ class TutorialView:
         self._screen.blit(content, (316, 116))
         self._draw_navigation(page_index)
 
-    def _draw_header(self, page_index: int) -> None:
+    def _draw_header(self, page_index):
         eyebrow = self._small.render("QUADRANT WARS  /  CẨM NANG CHỈ HUY", True, (199, 171, 106))
         self._screen.blit(eyebrow, (40, 28))
         title = self._title.render("HỌC NHANH. ĐÁNH CHẮC.", True, (255, 247, 224))
@@ -216,7 +216,7 @@ class TutorialView:
         self._screen.blit(progress, progress.get_rect(topright=(1240, 64)))
         pygame.draw.line(self._screen, (106, 91, 60), (40, 108), (1240, 108), 1)
 
-    def _draw_tabs(self, page_index: int, elapsed: float) -> None:
+    def _draw_tabs(self, page_index, elapsed):
         mouse = pygame.mouse.get_pos()
         for index, (page, rect) in enumerate(zip(self._pages, self.tab_rects())):
             active = index == page_index
@@ -236,7 +236,7 @@ class TutorialView:
                 pulse = 3 + int((math.sin(elapsed * 4.0) + 1.0) * 1.5)
                 pygame.draw.circle(self._screen, page.accent, (rect.right - 17, rect.centery), pulse)
 
-    def _draw_navigation(self, page_index: int) -> None:
+    def _draw_navigation(self, page_index):
         _draw_button(self._screen, self.back_rect, "←  QUAY LẠI", self._small, (188, 166, 108))
         _draw_button(
             self._screen,
@@ -257,12 +257,12 @@ class TutorialView:
 
     def _draw_preview(
         self,
-        surface: pygame.Surface,
-        rect: pygame.Rect,
-        preview: str,
-        elapsed: float,
-        accent: tuple[int, int, int],
-    ) -> None:
+        surface,
+        rect,
+        preview,
+        elapsed,
+        accent,
+    ):
         field = pygame.Surface(rect.size, pygame.SRCALPHA)
         pygame.draw.rect(field, (22, 35, 27, 235), field.get_rect(), border_radius=7)
         pygame.draw.rect(field, (*accent, 120), field.get_rect(), 1, border_radius=7)
@@ -278,7 +278,7 @@ class TutorialView:
             self._draw_controls_preview(field, elapsed)
         surface.blit(field, rect)
 
-    def _draw_gameplay_preview(self, field: pygame.Surface, elapsed: float) -> None:
+    def _draw_gameplay_preview(self, field, elapsed):
         w, h = field.get_size()
         colors = cfg.PLAYER_COLORS
         polygons = (
@@ -305,7 +305,7 @@ class TutorialView:
         gold = self._small.render(f"+{cfg.FOOD_PER_WORKER_PER_SECOND:.2f}/s", True, (255, 229, 139))
         field.blit(gold, (89, 126))
 
-    def _draw_units_preview(self, field: pygame.Surface, elapsed: float) -> None:
+    def _draw_units_preview(self, field, elapsed):
         entries = (
             ("queen", "QUEEN", (92, 184)),
             ("worker", "WORKER", (202, 184)),
@@ -328,7 +328,7 @@ class TutorialView:
         hint = self._small.render("Idle  •  Di chuyển  •  Tấn công  •  Trúng đòn", True, (148, 165, 151))
         field.blit(hint, hint.get_rect(center=(field.get_width() // 2, 292)))
 
-    def _draw_development_preview(self, field: pygame.Surface, elapsed: float) -> None:
+    def _draw_development_preview(self, field, elapsed):
         centers = (78, 228, 378)
         labels = ("ECONOMY", "BARRACKS", "FORTRESS")
         colors = ((91, 178, 104), (205, 118, 72), (102, 157, 208))
@@ -356,7 +356,7 @@ class TutorialView:
             level_surf = self._small.render(f"CẤP {level}", True, (225, 220, 199))
             field.blit(level_surf, level_surf.get_rect(center=(x, 306)))
 
-    def _draw_objective_preview(self, field: pygame.Surface, elapsed: float) -> None:
+    def _draw_objective_preview(self, field, elapsed):
         centers = ((92, 172), (228, 172), (364, 172))
         labels = ("CARAVAN", "WAR BANNER", "ANCIENT SHRINE")
         for index, ((x, y), label) in enumerate(zip(centers, labels)):
@@ -386,7 +386,7 @@ class TutorialView:
         reward_surf = self._small.render(reward, True, (247, 205, 105))
         field.blit(reward_surf, reward_surf.get_rect(center=(field.get_width() // 2, 304)))
 
-    def _draw_controls_preview(self, field: pygame.Surface, elapsed: float) -> None:
+    def _draw_controls_preview(self, field, elapsed):
         keysets = (("Q", "W", "E"), ("I", "O", "P"), ("Z", "X", "C"), ("B", "N", "M"))
         active = int(elapsed * 1.4) % 3
         for row, keys in enumerate(keysets):
@@ -406,14 +406,14 @@ class TutorialView:
 
     def _blit_unit(
         self,
-        surface: pygame.Surface,
-        role: str,
-        center: tuple[int, int],
-        color: tuple[int, int, int],
-        phase: float,
-        action: str,
-        scale: float,
-    ) -> None:
+        surface,
+        role,
+        center,
+        color,
+        phase,
+        action,
+        scale,
+    ):
         base_height = {"queen": 78, "worker": 62, "soldier": 60, "defender": 64}[role]
         frame_count = self._art.animation_count(role, action)
         frame = 0 if frame_count <= 1 else int(max(0.0, phase) * (8 if action == "walk" else 6)) % frame_count
@@ -427,9 +427,9 @@ class TutorialView:
         surface.blit(sprite, sprite.get_rect(midbottom=(center[0], center[1] + 11)))
 
 
-def _wrap_text(font: pygame.font.Font, text: str, width: int) -> list[str]:
+def _wrap_text(font, text, width):
     words = text.split()
-    lines: list[str] = []
+    lines = []
     current = ""
     for word in words:
         candidate = word if not current else f"{current} {word}"
@@ -444,14 +444,14 @@ def _wrap_text(font: pygame.font.Font, text: str, width: int) -> list[str]:
 
 
 def _draw_button(
-    screen: pygame.Surface,
-    rect: pygame.Rect,
-    label: str,
-    font: pygame.font.Font,
-    accent: tuple[int, int, int],
+    screen,
+    rect,
+    label,
+    font,
+    accent,
     *,
-    active: bool = True,
-) -> None:
+    active = True,
+):
     hover = active and rect.collidepoint(pygame.mouse.get_pos())
     fill = _brighten(accent, 12) if hover else accent if active else (55, 62, 59)
     text_color = (22, 27, 24) if active else (119, 128, 121)
@@ -462,5 +462,5 @@ def _draw_button(
     screen.blit(text, text.get_rect(center=rect.center))
 
 
-def _brighten(color: tuple[int, int, int], amount: int) -> tuple[int, int, int]:
+def _brighten(color, amount):
     return tuple(min(255, channel + amount) for channel in color)

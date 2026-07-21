@@ -1,8 +1,4 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Iterable
 
 from quadrant_wars import balance_config as cfg
 from quadrant_wars.core.battlefield import territory_landmark_position
@@ -16,9 +12,6 @@ from quadrant_wars.core.unit import (
     Worker,
 )
 
-Point = tuple[float, float]
-
-
 class TerritorySpecialization(Enum):
     NONE = auto()
     ECONOMY = auto()
@@ -26,43 +19,76 @@ class TerritorySpecialization(Enum):
     FORTRESS = auto()
 
 
-@dataclass(frozen=True)
 class DevelopmentQuote:
-    specialization: TerritorySpecialization
-    current_level: int
-    resulting_level: int
-    cost: int
-    action: str
-    allowed: bool
-    reason: str = ""
+    def __init__(
+        self,
+        specialization,
+        current_level,
+        resulting_level,
+        cost,
+        action,
+        allowed,
+        reason="",
+    ):
+        self.specialization = specialization
+        self.current_level = current_level
+        self.resulting_level = resulting_level
+        self.cost = cost
+        self.action = action
+        self.allowed = allowed
+        self.reason = reason
+
+    def __eq__(self, other):
+        return isinstance(other, DevelopmentQuote) and vars(self) == vars(other)
 
 
-@dataclass(frozen=True)
 class DevelopmentResult:
-    success: bool
-    quote: DevelopmentQuote | None
-    message: str
+    def __init__(self, success, quote, message):
+        self.success = success
+        self.quote = quote
+        self.message = message
+
+    def __eq__(self, other):
+        return isinstance(other, DevelopmentResult) and vars(self) == vars(other)
 
 
-@dataclass(frozen=True)
 class TerritoryView:
-    id: int
-    owner_id: int
-    soldiers: int
-    workers: int
-    queen_alive: bool
-    food: float
-    income_per_second: float = 0.0
-    queen_hp: float = 0.0
-    queen_max_hp: int = 0
-    specialization: TerritorySpecialization = TerritorySpecialization.NONE
-    specialization_level: int = 0
-    defenders: int = 0
-    defender_capacity: int = 0
+    def __init__(
+        self,
+        id,
+        owner_id,
+        soldiers,
+        workers,
+        queen_alive,
+        food,
+        income_per_second=0.0,
+        queen_hp=0.0,
+        queen_max_hp=0,
+        specialization=TerritorySpecialization.NONE,
+        specialization_level=0,
+        defenders=0,
+        defender_capacity=0,
+    ):
+        self.id = id
+        self.owner_id = owner_id
+        self.soldiers = soldiers
+        self.workers = workers
+        self.queen_alive = queen_alive
+        self.food = food
+        self.income_per_second = income_per_second
+        self.queen_hp = queen_hp
+        self.queen_max_hp = queen_max_hp
+        self.specialization = specialization
+        self.specialization_level = specialization_level
+        self.defenders = defenders
+        self.defender_capacity = defender_capacity
+
+    def __eq__(self, other):
+        return isinstance(other, TerritoryView) and vars(self) == vars(other)
 
 
 class Territory:
-    def __init__(self, territory_id: int, owner: object, polygon: Iterable[Point]) -> None:
+    def __init__(self, territory_id, owner, polygon):
         self._id = territory_id
         self._owner = owner
         self._polygon = list(polygon)
@@ -71,68 +97,68 @@ class Territory:
         self._workers = Worker(cfg.STARTING_WORKERS)
         self._soldiers = Soldier(cfg.STARTING_SOLDIERS)
         self._defenders = Defender(0)
-        self._defender_respawn_timers: list[float] = []
+        self._defender_respawn_timers = []
         self._is_capital = True
-        self._spawn_queue: list[str] = []
+        self._spawn_queue = []
         self._spawn_timer = 0.0
-        self._spawn_effects: list[float] = []
-        self._visual_spawns: list[dict[str, any]] = []
+        self._spawn_effects = []
+        self._visual_spawns = []
         self._specialization = TerritorySpecialization.NONE
         self._specialization_level = 0
 
     @property
-    def id(self) -> int:
+    def id(self):
         return self._id
 
     @property
-    def owner(self) -> object:
+    def owner(self):
         return self._owner
 
     @owner.setter
-    def owner(self, value: object) -> None:
+    def owner(self, value):
         self._owner = value
 
     @property
-    def polygon(self) -> list[Point]:
+    def polygon(self):
         return list(self._polygon)
 
     @property
-    def centroid(self) -> Point:
+    def centroid(self):
         xs = [p[0] for p in self._polygon]
         ys = [p[1] for p in self._polygon]
         return (sum(xs) / len(xs), sum(ys) / len(ys))
 
     @property
-    def battle_position(self) -> Point:
+    def battle_position(self):
         """Castle gate used as the shared march and combat destination."""
         return territory_landmark_position(self._id, self._polygon)
 
     @property
-    def food(self) -> float:
+    def food(self):
         return self._food
 
     @property
-    def queen(self) -> Queen:
+    def queen(self):
         return self._queen
 
     @property
-    def workers(self) -> Worker:
+    def workers(self):
         return self._workers
 
     @property
-    def soldiers(self) -> Soldier:
+    def soldiers(self):
         return self._soldiers
 
     @property
-    def defenders(self) -> Defender:
+    def defenders(self):
         return self._defenders
 
     @property
-    def units(self) -> list[Unit]:
+    def units(self):
         return [self._queen, self._workers, self._soldiers, self._defenders]
 
     @property
-    def hp(self) -> int:
+    def hp(self):
         return (
             self._queen.count
             + self._workers.count
@@ -141,41 +167,41 @@ class Territory:
         )
 
     @property
-    def is_capital(self) -> bool:
+    def is_capital(self):
         return self._is_capital
 
     @is_capital.setter
-    def is_capital(self, value: bool) -> None:
+    def is_capital(self, value):
         self._is_capital = value
 
     @property
-    def spawn_effects(self) -> list[float]:
+    def spawn_effects(self):
         return self._spawn_effects
 
     @property
-    def spawn_queue_size(self) -> int:
+    def spawn_queue_size(self):
         return len(self._spawn_queue)
 
     @property
-    def visual_spawns(self) -> list[dict[str, any]]:
+    def visual_spawns(self):
         return self._visual_spawns
 
     @property
-    def specialization(self) -> TerritorySpecialization:
+    def specialization(self):
         return self._specialization
 
     @property
-    def specialization_level(self) -> int:
+    def specialization_level(self):
         return self._specialization_level
 
     @property
-    def worker_income_multiplier(self) -> float:
+    def worker_income_multiplier(self):
         if self._specialization is TerritorySpecialization.ECONOMY:
             return 1.0 + cfg.ECONOMY_INCOME_BONUS_PER_LEVEL * self._specialization_level
         return 1.0
 
     @property
-    def worker_cost_multiplier(self) -> float:
+    def worker_cost_multiplier(self):
         if self._specialization is TerritorySpecialization.ECONOMY:
             return max(
                 0.1,
@@ -184,11 +210,11 @@ class Territory:
         return 1.0
 
     @property
-    def base_income_per_second(self) -> float:
+    def base_income_per_second(self):
         return cfg.BASE_TERRITORY_INCOME_PER_SECOND
 
     @property
-    def worker_income_per_second(self) -> float:
+    def worker_income_per_second(self):
         return (
             self._workers.count
             * cfg.FOOD_PER_WORKER_PER_SECOND
@@ -196,34 +222,34 @@ class Territory:
         )
 
     @property
-    def income_per_second(self) -> float:
+    def income_per_second(self):
         if not self.can_recruit:
             return 0.0
         return self.base_income_per_second + self.worker_income_per_second
 
     @property
-    def soldier_cost(self) -> int:
+    def soldier_cost(self):
         discount = 0
         if self._specialization is TerritorySpecialization.BARRACKS:
             discount = cfg.BARRACKS_SOLDIER_DISCOUNT_PER_LEVEL * self._specialization_level
         return max(1, cfg.SOLDIER_COST - discount)
 
     @property
-    def soldier_spawn_delay(self) -> float:
+    def soldier_spawn_delay(self):
         reduction = 0.0
         if self._specialization is TerritorySpecialization.BARRACKS:
             reduction = cfg.BARRACKS_SPAWN_REDUCTION_PER_LEVEL * self._specialization_level
         return max(0.15, cfg.SPAWN_DELAY * (1.0 - reduction))
 
     @property
-    def damage_taken_multiplier(self) -> float:
+    def damage_taken_multiplier(self):
         reduction = 0.0
         if self._specialization is TerritorySpecialization.FORTRESS:
             reduction = cfg.FORTRESS_DAMAGE_REDUCTION_PER_LEVEL * self._specialization_level
         return max(0.1, 1.0 - reduction)
 
     @property
-    def defender_capacity(self) -> int:
+    def defender_capacity(self):
         if (
             self._specialization is TerritorySpecialization.FORTRESS
             and self._specialization_level > 0
@@ -232,17 +258,17 @@ class Territory:
         return 0
 
     @property
-    def defender_respawn_count(self) -> int:
+    def defender_respawn_count(self):
         return len(self._defender_respawn_timers)
 
     @property
-    def next_defender_respawn(self) -> float | None:
+    def next_defender_respawn(self):
         if not self._defender_respawn_timers:
             return None
         return min(self._defender_respawn_timers)
 
     @property
-    def defense_value(self) -> float:
+    def defense_value(self):
         """Total defense strength - sum of all unit HP for bot evaluation."""
         raw = (
             self._soldiers.total_hp
@@ -253,7 +279,7 @@ class Territory:
         return raw / self.damage_taken_multiplier
 
     @property
-    def defense_value_legacy(self) -> int:
+    def defense_value_legacy(self):
         """Legacy combat-value based defense for bot ratio calculations."""
         raw = (
             self._soldiers.total_combat_value
@@ -264,10 +290,10 @@ class Territory:
         return int(round(raw / self.damage_taken_multiplier))
 
     @property
-    def can_recruit(self) -> bool:
+    def can_recruit(self):
         return self._queen.is_alive and getattr(self._owner, "is_alive", True)
 
-    def snapshot(self) -> TerritoryView:
+    def snapshot(self):
         return TerritoryView(
             id=self._id,
             owner_id=getattr(self._owner, "id", -1),
@@ -284,30 +310,30 @@ class Territory:
             defender_capacity=self.defender_capacity,
         )
 
-    def add_food(self, amount: float) -> None:
+    def add_food(self, amount):
         if amount > 0:
             self._food += amount
 
-    def spend_food(self, amount: float) -> bool:
+    def spend_food(self, amount):
         if amount <= self._food:
             self._food -= amount
             return True
         return False
 
-    def worker_cost(self) -> int:
+    def worker_cost(self):
         normal_cost = cfg.WORKER_BASE_COST * (
             cfg.WORKER_COST_GROWTH ** self._workers.count
         )
         return max(1, int(round(normal_cost * self.worker_cost_multiplier)))
 
-    def can_buy_worker(self) -> bool:
+    def can_buy_worker(self):
         if not self.can_recruit:
             return False
         if self._workers.count >= cfg.MAX_WORKERS_PER_TERRITORY:
             return False
         return self._food >= self.worker_cost()
 
-    def development_quote(self, specialization: TerritorySpecialization) -> DevelopmentQuote:
+    def development_quote(self, specialization):
         if specialization is TerritorySpecialization.NONE:
             return DevelopmentQuote(
                 specialization, self._specialization_level, self._specialization_level,
@@ -353,7 +379,7 @@ class Territory:
             reason=reason,
         )
 
-    def develop(self, specialization: TerritorySpecialization) -> DevelopmentResult:
+    def develop(self, specialization):
         quote = self.development_quote(specialization)
         if not quote.allowed:
             return DevelopmentResult(False, quote, quote.reason)
@@ -375,7 +401,7 @@ class Territory:
         branch = specialization.name.title()
         return DevelopmentResult(True, quote, f"{branch} level {quote.resulting_level} ready")
 
-    def buy_soldier(self, amount: int = 1) -> bool:
+    def buy_soldier(self, amount = 1):
         if not self.can_recruit or amount <= 0:
             return False
         cost = self.soldier_cost * amount
@@ -387,7 +413,7 @@ class Territory:
             self._spawn_timer = self.soldier_spawn_delay
         return True
 
-    def buy_worker(self) -> bool:
+    def buy_worker(self):
         if not self.can_buy_worker():
             return False
         cost = self.worker_cost()
@@ -399,22 +425,22 @@ class Territory:
             self._spawn_timer = cfg.SPAWN_DELAY
         return True
 
-    def remove_soldiers(self, amount: int) -> int:
+    def remove_soldiers(self, amount):
         return self._soldiers.remove(amount)
 
-    def add_soldiers(self, amount: int) -> None:
+    def add_soldiers(self, amount):
         self._soldiers.add(amount)
 
-    def detach_soldiers(self, amount: int) -> list[SoldierState]:
+    def detach_soldiers(self, amount):
         return [
             SoldierState(unit_id=-1, hp=hp, source_id=self._id)
             for hp in self._soldiers.detach_hp(amount)
         ]
 
-    def receive_soldiers(self, soldiers: Iterable[SoldierState]) -> None:
+    def receive_soldiers(self, soldiers):
         self._soldiers.add_with_hp([soldier.hp for soldier in soldiers])
 
-    def detach_defenders(self) -> list[DefenderState]:
+    def detach_defenders(self):
         return [
             DefenderState(unit_id=-1, hp=hp, source_id=self._id)
             for hp in self._defenders.detach_hp(self._defenders.count)
@@ -422,9 +448,9 @@ class Territory:
 
     def finish_defense(
         self,
-        survivors: Iterable[DefenderState],
-        deployed_count: int,
-    ) -> None:
+        survivors,
+        deployed_count,
+    ):
         states = list(survivors)
         self._defenders.add_with_hp([state.hp for state in states])
         casualties = max(0, int(deployed_count) - len(states))
@@ -438,7 +464,7 @@ class Territory:
             [cfg.DEFENDER_RESPAWN_DELAY] * min(casualties, available_slots)
         )
 
-    def update(self, dt: float, in_combat: bool = False) -> None:
+    def update(self, dt, in_combat = False):
         if not self.can_recruit:
             return
         self.add_food(self.base_income_per_second * dt)
@@ -494,11 +520,11 @@ class Territory:
                 else:
                     self._spawn_timer = 0.0
 
-    def _update_defender_respawns(self, dt: float) -> None:
+    def _update_defender_respawns(self, dt):
         if self.defender_capacity <= 0:
             self._defender_respawn_timers.clear()
             return
-        remaining: list[float] = []
+        remaining = []
         respawned = 0
         for timer in self._defender_respawn_timers:
             next_timer = timer - dt
@@ -520,7 +546,7 @@ class Territory:
                 )
             self._spawn_effects.extend([1.0] * respawned)
 
-    def eliminate_command_units(self) -> None:
+    def eliminate_command_units(self):
         self._queen.remove(self._queen.count)
         self._workers.remove(self._workers.count)
         self._defenders.remove(self._defenders.count)
@@ -531,9 +557,9 @@ class Territory:
 
     def reset_after_capture(
         self,
-        new_owner: object,
-        surviving_soldiers: int | Iterable[SoldierState],
-    ) -> None:
+        new_owner,
+        surviving_soldiers,
+    ):
         """Capture territory: new owner gets queen + survivors + workers + bonus food."""
         self._owner = new_owner
         # Kill old queen, spawn new one for new owner

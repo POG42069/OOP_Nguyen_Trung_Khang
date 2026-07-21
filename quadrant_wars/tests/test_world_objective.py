@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import unittest
 
@@ -9,14 +8,14 @@ from quadrant_wars.game.game_manager import ArmyTargetType, Match
 
 
 class WorldObjectiveTest(unittest.TestCase):
-    def _active_match(self, objective_type: WorldObjectiveType) -> tuple[Match, WorldObjective]:
+    def _active_match(self, objective_type):
         match = Match(["human", "human"], seed=19, headless=True)
         objective = WorldObjective(77, objective_type, (640.0, 360.0))
         objective.activate()
         match._world_objective = objective
         return match, objective
 
-    def test_objective_is_telegraphed_then_activates(self) -> None:
+    def test_objective_is_telegraphed_then_activates(self):
         match = Match(["human", "human"], seed=9, headless=True)
 
         match.update(cfg.OBJECTIVE_FIRST_ACTIVE_AT - cfg.OBJECTIVE_TELEGRAPH_DURATION)
@@ -28,7 +27,7 @@ class WorldObjectiveTest(unittest.TestCase):
         self.assertTrue(first.active)
         self.assertEqual(first.state, WorldObjectiveState.ACTIVE)
 
-    def test_caravan_reward_and_survivors_return_home(self) -> None:
+    def test_caravan_reward_and_survivors_return_home(self):
         match, objective = self._active_match(WorldObjectiveType.CARAVAN)
         source = match.territories[0]
         source.add_soldiers(6)
@@ -41,7 +40,7 @@ class WorldObjectiveTest(unittest.TestCase):
         self.assertGreaterEqual(source.food, before_gold + cfg.OBJECTIVE_CARAVAN_GOLD)
         self.assertTrue(any(army.target_type is ArmyTargetType.RETURN for army in match.armies))
 
-    def test_war_banner_applies_temporary_combat_and_march_buff(self) -> None:
+    def test_war_banner_applies_temporary_combat_and_march_buff(self):
         match, _ = self._active_match(WorldObjectiveType.WAR_BANNER)
         source = match.territories[0]
         source.add_soldiers(6)
@@ -54,7 +53,7 @@ class WorldObjectiveTest(unittest.TestCase):
         self.assertEqual(player.attack_multiplier, cfg.WAR_BANNER_ATTACK_MULTIPLIER)
         self.assertEqual(player.march_speed_multiplier, cfg.WAR_BANNER_MARCH_MULTIPLIER)
 
-    def test_shrine_heals_living_queens_without_overhealing(self) -> None:
+    def test_shrine_heals_living_queens_without_overhealing(self):
         match, _ = self._active_match(WorldObjectiveType.ANCIENT_SHRINE)
         source = match.territories[0]
         source.queen.take_damage(50)
@@ -70,7 +69,7 @@ class WorldObjectiveTest(unittest.TestCase):
         )
         self.assertLessEqual(source.queen.front_hp, cfg.QUEEN_HP)
 
-    def test_active_objective_persists_until_captured(self) -> None:
+    def test_active_objective_persists_until_captured(self):
         match, objective = self._active_match(WorldObjectiveType.CARAVAN)
 
         match.update(600.0)
@@ -80,7 +79,7 @@ class WorldObjectiveTest(unittest.TestCase):
         self.assertTrue(objective.active)
         self.assertEqual(match.objective_countdown, 0.0)
 
-    def test_failed_assault_leaves_damage_and_objective_available(self) -> None:
+    def test_failed_assault_leaves_damage_and_objective_available(self):
         match, objective = self._active_match(WorldObjectiveType.CARAVAN)
         source = match.territories[0]
         source.add_soldiers(1)
@@ -93,7 +92,7 @@ class WorldObjectiveTest(unittest.TestCase):
         self.assertLess(objective.soldiers.total_hp, guard_hp_before)
         self.assertEqual(match.objective_countdown, 0.0)
 
-    def test_capture_schedules_the_next_objective_after_a_full_delay(self) -> None:
+    def test_capture_schedules_the_next_objective_after_a_full_delay(self):
         match, objective = self._active_match(WorldObjectiveType.CARAVAN)
         source = match.territories[0]
         source.add_soldiers(6)
@@ -104,7 +103,7 @@ class WorldObjectiveTest(unittest.TestCase):
         self.assertEqual(objective.state, WorldObjectiveState.RESOLVED)
         self.assertAlmostEqual(match.objective_countdown, cfg.OBJECTIVE_RESPAWN_DELAY, delta=0.2)
 
-    def test_rival_interrupts_neutral_fight_without_healing_or_hurting_guards(self) -> None:
+    def test_rival_interrupts_neutral_fight_without_healing_or_hurting_guards(self):
         match, objective = self._active_match(WorldObjectiveType.CARAVAN)
         first_source, second_source = match.territories
         first_source.add_soldiers(8)
@@ -144,7 +143,7 @@ class WorldObjectiveTest(unittest.TestCase):
             if agent.owner is match.players[0] and agent.unit_id in first_hp_before:
                 self.assertLessEqual(agent.hp, first_hp_before[agent.unit_id])
 
-    def test_capture_turns_every_late_objective_army_into_a_return(self) -> None:
+    def test_capture_turns_every_late_objective_army_into_a_return(self):
         match, objective = self._active_match(WorldObjectiveType.WAR_BANNER)
         first_source, second_source = match.territories
         first_source.add_soldiers(10)
@@ -185,7 +184,7 @@ class WorldObjectiveTest(unittest.TestCase):
         }
         self.assertTrue(late_ids.issubset(returned_ids))
 
-    def test_objective_reward_is_idempotent(self) -> None:
+    def test_objective_reward_is_idempotent(self):
         match, objective = self._active_match(WorldObjectiveType.CARAVAN)
         source = match.territories[0]
         source.add_soldiers(7)

@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import unittest
 
@@ -10,7 +9,7 @@ from quadrant_wars.core.unit import DefenderState, SoldierState
 from quadrant_wars.game.game_manager import Match
 
 
-def make_territory() -> Territory:
+def make_territory():
     owner = HumanPlayer(0, "Builder", (214, 84, 76))
     territory = Territory(0, owner, [(0, 0), (120, 0), (120, 120), (0, 120)])
     territory.add_food(200)
@@ -18,7 +17,7 @@ def make_territory() -> Territory:
 
 
 class TerritoryDevelopmentTest(unittest.TestCase):
-    def test_economy_only_multiplies_worker_income_and_discounts_workers(self) -> None:
+    def test_economy_only_multiplies_worker_income_and_discounts_workers(self):
         territory = make_territory()
         normal_worker_cost = territory.worker_cost()
 
@@ -53,7 +52,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
             territory.workers.add(1)
         self.assertAlmostEqual(territory.income_per_second, 2.90)
 
-    def test_territory_generates_base_income_without_workers(self) -> None:
+    def test_territory_generates_base_income_without_workers(self):
         territory = make_territory()
         territory.workers.remove(territory.workers.count)
         before = territory.food
@@ -69,7 +68,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
             cfg.BASE_TERRITORY_INCOME_PER_SECOND,
         )
 
-    def test_each_worker_adds_income_and_worker_costs_scale(self) -> None:
+    def test_each_worker_adds_income_and_worker_costs_scale(self):
         territory = make_territory()
         expected_costs = []
         actual_costs = []
@@ -97,7 +96,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
         self.assertGreaterEqual(territory.food, territory.worker_cost())
         self.assertTrue(territory.buy_worker())
 
-    def test_barracks_discount_and_spawn_delay(self) -> None:
+    def test_barracks_discount_and_spawn_delay(self):
         territory = make_territory()
         territory.develop(TerritorySpecialization.BARRACKS)
 
@@ -116,7 +115,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
         self.assertEqual(territory.soldier_cost, 10)
         self.assertAlmostEqual(territory.soldier_spawn_delay, 0.78)
 
-    def test_fortress_adds_defenders_and_small_damage_reduction(self) -> None:
+    def test_fortress_adds_defenders_and_small_damage_reduction(self):
         territory = make_territory()
         territory.develop(TerritorySpecialization.FORTRESS)
         self.assertEqual(territory.defenders.count, 2)
@@ -131,7 +130,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
         )
         self.assertGreater(territory.defense_value, territory.soldiers.total_hp + territory.workers.total_hp)
 
-    def test_defender_casualties_heal_and_respawn_only_outside_combat(self) -> None:
+    def test_defender_casualties_heal_and_respawn_only_outside_combat(self):
         territory = make_territory()
         territory.develop(TerritorySpecialization.FORTRESS)
         territory.develop(TerritorySpecialization.FORTRESS)
@@ -155,7 +154,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
         self.assertEqual(territory.defenders.count, 4)
         self.assertEqual(territory.defender_respawn_count, 0)
 
-    def test_conversion_uses_local_gold_and_resets_to_level_one(self) -> None:
+    def test_conversion_uses_local_gold_and_resets_to_level_one(self):
         territory = make_territory()
         territory.develop(TerritorySpecialization.ECONOMY)
         territory.develop(TerritorySpecialization.ECONOMY)
@@ -169,7 +168,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
         self.assertEqual(territory.specialization_level, 1)
         self.assertEqual(territory.food, before - cfg.DEVELOPMENT_CONVERSION_COST)
 
-    def test_conversion_away_from_fortress_clears_garrison_and_timers(self) -> None:
+    def test_conversion_away_from_fortress_clears_garrison_and_timers(self):
         territory = make_territory()
         territory.develop(TerritorySpecialization.FORTRESS)
         deployed = territory.detach_defenders()
@@ -182,7 +181,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
         self.assertEqual(territory.defender_capacity, 0)
         self.assertEqual(territory.defender_respawn_count, 0)
 
-    def test_capture_reduces_level_but_retains_branch(self) -> None:
+    def test_capture_reduces_level_but_retains_branch(self):
         territory = make_territory()
         territory.develop(TerritorySpecialization.FORTRESS)
         territory.develop(TerritorySpecialization.FORTRESS)
@@ -198,7 +197,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
         self.assertEqual(territory.specialization_level, 0)
         self.assertEqual(territory.defender_respawn_count, 0)
 
-    def test_match_blocks_development_during_active_territory_battle(self) -> None:
+    def test_match_blocks_development_during_active_territory_battle(self):
         match = Match(["human", "human"], seed=17, headless=True)
         territory = match.territories[0]
         player = match.players[0]
@@ -221,7 +220,7 @@ class TerritoryDevelopmentTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(territory.food, before)
 
-    def test_insufficient_local_gold_does_not_mutate_territory(self) -> None:
+    def test_insufficient_local_gold_does_not_mutate_territory(self):
         owner = HumanPlayer(0, "Poor", (214, 84, 76))
         territory = Territory(0, owner, [(0, 0), (120, 0), (120, 120), (0, 120)])
         before = territory.food

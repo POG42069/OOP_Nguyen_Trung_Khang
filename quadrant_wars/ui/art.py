@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from pathlib import Path
 
@@ -11,11 +10,11 @@ IMAGE_DIR = Path(__file__).resolve().parents[1] / "assets" / "images"
 class ArtAssets:
     """Loads generated artwork once and serves screen-sized/cropped variants."""
 
-    def __init__(self, viewport: tuple[int, int]) -> None:
+    def __init__(self, viewport):
         self._viewport = viewport
-        self._scaled_cache: dict[tuple[object, ...], pygame.Surface] = {}
-        self._sources: dict[str, pygame.Surface] = {}
-        self._animations: dict[tuple[str, str], list[pygame.Surface]] = {}
+        self._scaled_cache = {}
+        self._sources = {}
+        self._animations = {}
         self.battlefield = _load_cover(IMAGE_DIR / "battlefield.png", viewport)
         self.river_mask = _load_cover_alpha(IMAGE_DIR / "river_mask.png", viewport)
 
@@ -65,7 +64,7 @@ class ArtAssets:
             for action, frames in actions.items():
                 self._animations[(view_name, action)] = frames
 
-    def sprite(self, name: str, target_height: int) -> pygame.Surface | None:
+    def sprite(self, name, target_height):
         source = self._sources.get(name)
         if source is None:
             return None
@@ -78,21 +77,21 @@ class ArtAssets:
 
     def animation_count(
         self,
-        name: str,
-        action: str,
-        direction: tuple[float, float] | None = None,
-    ) -> int:
+        name,
+        action,
+        direction = None,
+    ):
         resolved_name = self._directional_name(name, direction)
         return len(self._animations.get((resolved_name, action), ()))
 
     def animation_frame(
         self,
-        name: str,
-        action: str,
-        frame_index: int,
-        target_height: int,
-        direction: tuple[float, float] | None = None,
-    ) -> pygame.Surface | None:
+        name,
+        action,
+        frame_index,
+        target_height,
+        direction = None,
+    ):
         resolved_name = self._directional_name(name, direction)
         frames = self._animations.get((resolved_name, action))
         if not frames:
@@ -108,9 +107,9 @@ class ArtAssets:
 
     def _directional_name(
         self,
-        name: str,
-        direction: tuple[float, float] | None,
-    ) -> str:
+        name,
+        direction,
+    ):
         if (
             name in ("soldier", "defender")
             and direction is not None
@@ -120,7 +119,7 @@ class ArtAssets:
             return f"{name}_back"
         return name
 
-    def building(self, name: str, target_width: int) -> pygame.Surface | None:
+    def building(self, name, target_width):
         source = self._sources.get(name)
         if source is None:
             return None
@@ -132,10 +131,10 @@ class ArtAssets:
         return self._scaled_cache[key]
 
 
-_MENU_CACHE: dict[tuple[int, int], pygame.Surface] = {}
+_MENU_CACHE = {}
 
 
-def menu_background(viewport: tuple[int, int]) -> pygame.Surface | None:
+def menu_background(viewport):
     if viewport not in _MENU_CACHE:
         loaded = _load_cover(IMAGE_DIR / "menu_battlefield.png", viewport)
         if loaded is None:
@@ -144,14 +143,14 @@ def menu_background(viewport: tuple[int, int]) -> pygame.Surface | None:
     return _MENU_CACHE[viewport]
 
 
-def _load_alpha(path: Path) -> pygame.Surface | None:
+def _load_alpha(path):
     try:
         return pygame.image.load(str(path)).convert_alpha()
     except (FileNotFoundError, pygame.error):
         return None
 
 
-def _load_cover(path: Path, viewport: tuple[int, int]) -> pygame.Surface | None:
+def _load_cover(path, viewport):
     try:
         source = pygame.image.load(str(path)).convert()
     except (FileNotFoundError, pygame.error):
@@ -169,7 +168,7 @@ def _load_cover(path: Path, viewport: tuple[int, int]) -> pygame.Surface | None:
     return scaled.subsurface((x, y, target_w, target_h)).copy()
 
 
-def _load_cover_alpha(path: Path, viewport: tuple[int, int]) -> pygame.Surface | None:
+def _load_cover_alpha(path, viewport):
     try:
         source = pygame.image.load(str(path)).convert_alpha()
     except (FileNotFoundError, pygame.error):
@@ -187,11 +186,11 @@ def _load_cover_alpha(path: Path, viewport: tuple[int, int]) -> pygame.Surface |
     return scaled.subsurface((x, y, target_w, target_h)).copy()
 
 
-def _extract_animation_frames(sheet: pygame.Surface) -> list[pygame.Surface]:
+def _extract_animation_frames(sheet):
     """Extract eight isolated poses and normalize them to a shared foot anchor."""
     mask = pygame.mask.from_surface(sheet, 16)
     components = mask.connected_components(500)
-    poses: list[tuple[pygame.Rect, pygame.Surface]] = []
+    poses = []
     for component in components:
         rects = component.get_bounding_rects()
         if not rects:
@@ -209,7 +208,7 @@ def _extract_animation_frames(sheet: pygame.Surface) -> list[pygame.Surface]:
 
     max_width = max(frame.get_width() for _, frame in poses) + 12
     max_height = max(frame.get_height() for _, frame in poses) + 12
-    normalized: list[pygame.Surface] = []
+    normalized = []
     for _, frame in poses:
         canvas = pygame.Surface((max_width, max_height), pygame.SRCALPHA)
         destination = frame.get_rect(midbottom=(max_width // 2, max_height - 4))
@@ -218,7 +217,7 @@ def _extract_animation_frames(sheet: pygame.Surface) -> list[pygame.Surface]:
     return normalized
 
 
-def _extract_combat_atlas(sheet: pygame.Surface) -> dict[str, list[pygame.Surface]]:
+def _extract_combat_atlas(sheet):
     """Extract the fixed 8x4 v2 atlas into foot-anchored action frames."""
     columns = 8
     rows = 4
@@ -234,9 +233,9 @@ def _extract_combat_atlas(sheet: pygame.Surface) -> dict[str, list[pygame.Surfac
         "attack": (2, range(0, 8)),
         "death": (3, range(0, 6)),
     }
-    actions: dict[str, list[pygame.Surface]] = {}
+    actions = {}
     for action, (row, columns_for_action) in layout.items():
-        cropped: list[pygame.Surface] = []
+        cropped = []
         for column in columns_for_action:
             cell_rect = pygame.Rect(
                 column * cell_width,
@@ -253,7 +252,7 @@ def _extract_combat_atlas(sheet: pygame.Surface) -> dict[str, list[pygame.Surfac
 
         max_width = max(frame.get_width() for frame in cropped) + 10
         max_height = max(frame.get_height() for frame in cropped) + 10
-        normalized: list[pygame.Surface] = []
+        normalized = []
         for frame in cropped:
             canvas = pygame.Surface((max_width, max_height), pygame.SRCALPHA)
             canvas.blit(frame, frame.get_rect(midbottom=(max_width // 2, max_height - 4)))

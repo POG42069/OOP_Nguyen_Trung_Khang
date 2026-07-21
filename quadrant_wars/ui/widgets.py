@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import pygame
 
@@ -6,12 +5,12 @@ from quadrant_wars import balance_config as cfg
 
 
 class Button:
-    def __init__(self, rect: pygame.Rect, label: str, action: str) -> None:
+    def __init__(self, rect, label, action):
         self.rect = rect
         self.label = label
         self.action = action
 
-    def draw(self, surface: pygame.Surface, font: pygame.font.Font, active: bool = True) -> None:
+    def draw(self, surface, font, active = True):
         mouse = pygame.mouse.get_pos()
         hover = self.rect.collidepoint(mouse)
         shadow = self.rect.move(0, 4)
@@ -33,9 +32,9 @@ class Button:
         text = font.render(self.label, True, text_color)
         surface.blit(text, text.get_rect(center=self.rect.center))
 
-    def clicked(self, event: pygame.event.Event) -> bool:
+    def clicked(self, event):
         return event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.rect.collidepoint(event.pos)
 
 
-def _brighten(color: tuple[int, int, int], amount: int) -> tuple[int, int, int]:
+def _brighten(color, amount):
     return tuple(min(255, channel + amount) for channel in color)

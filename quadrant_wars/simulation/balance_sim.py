@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import argparse
 import math
@@ -14,7 +13,7 @@ if __package__ is None or __package__ == "":
 from quadrant_wars.game.game_manager import Match
 
 
-def run_match(player_count: int, seed: int, max_seconds: float = 900.0) -> dict[str, object]:
+def run_match(player_count, seed, max_seconds = 900.0):
     match = Match(["bot"] * player_count, seed=seed, headless=True)
     dt = 0.25
     while match.winner is None and match.elapsed < max_seconds:
@@ -30,7 +29,7 @@ def run_match(player_count: int, seed: int, max_seconds: float = 900.0) -> dict[
     }
 
 
-def _strategy_name(player_name: str) -> str:
+def _strategy_name(player_name):
     for key in ("Aggressive", "Balanced", "Economic"):
         if key in player_name:
             return key
@@ -38,11 +37,11 @@ def _strategy_name(player_name: str) -> str:
 
 
 def run_batch(
-    matches: int,
-    player_count: int,
-    seed: int,
-    max_seconds: float = 900.0,
-) -> dict[str, object]:
+    matches,
+    player_count,
+    seed,
+    max_seconds = 900.0,
+):
     rng = random.Random(seed)
     results = [
         run_match(player_count, rng.randrange(10_000_000), max_seconds)
@@ -68,8 +67,8 @@ def run_batch(
     }
 
 
-def print_report(summaries: list[dict[str, object]]) -> None:
-    grouped: dict[int, list[dict[str, object]]] = defaultdict(list)
+def print_report(summaries):
+    grouped = defaultdict(list)
     for summary in summaries:
         grouped[int(summary["players"])].append(summary)
 
@@ -77,8 +76,8 @@ def print_report(summaries: list[dict[str, object]]) -> None:
         print(f"\n=== {players} players ===")
         for summary in player_summaries:
             matches = int(summary["matches"])
-            wins: Counter[str] = summary["wins"]  # type: ignore[assignment]
-            entries: Counter[str] = summary["entries"]  # type: ignore[assignment]
+            wins = summary["wins"]
+            entries = summary["entries"]
             print(f"Matches: {matches}")
             for name in ("Aggressive", "Balanced", "Economic"):
                 count = wins[name]
@@ -103,7 +102,7 @@ def print_report(summaries: list[dict[str, object]]) -> None:
             print(f"  Snowball <30s: {snowballs}/{matches} ({snowballs / matches:.1%})")
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description="Run headless Quadrant Wars balance simulations.")
     parser.add_argument("--matches", type=int, default=100, help="matches per player-count batch")
     parser.add_argument("--players", type=int, nargs="*", default=[2, 3, 4], choices=[2, 3, 4])

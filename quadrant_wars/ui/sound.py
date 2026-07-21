@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import math
 import struct
@@ -9,9 +8,9 @@ import pygame
 
 
 class SoundManager:
-    def __init__(self) -> None:
+    def __init__(self):
         self._enabled = False
-        self._sounds: dict[str, pygame.mixer.Sound] = {}
+        self._sounds = {}
         sound_dir = Path(__file__).resolve().parents[1] / "assets" / "sounds"
         sound_dir.mkdir(parents=True, exist_ok=True)
         specs = {
@@ -55,8 +54,8 @@ class SoundManager:
             "stone_hit": ("stone_hit_1", "stone_hit_2"),
             "soldier_down": ("soldier_down_1", "soldier_down_2"),
         }
-        self._variant_index: dict[str, int] = {}
-        self._last_played: dict[str, int] = {}
+        self._variant_index = {}
+        self._last_played = {}
         self._cooldowns_ms = {
             "footstep": 85,
             "sword_swing": 55,
@@ -87,7 +86,7 @@ class SoundManager:
             path = sound_dir / f"{name}.wav"
             self._sounds[name] = pygame.mixer.Sound(str(path))
 
-    def play(self, name: str) -> None:
+    def play(self, name):
         if not self._enabled:
             return
         now = pygame.time.get_ticks()
@@ -105,12 +104,12 @@ class SoundManager:
         if sound is not None:
             sound.play()
 
-    def play_many(self, names: list[str]) -> None:
+    def play_many(self, names):
         for name in names:
             self.play(name)
 
 
-def _write_sound(path: Path, frequency: int, duration: float, wave_type: str, volume: float) -> None:
+def _write_sound(path, frequency, duration, wave_type, volume):
     sample_rate = 44100
     samples = int(sample_rate * duration)
     with wave.open(str(path), "w") as wav:

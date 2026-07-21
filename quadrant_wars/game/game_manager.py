@@ -1,10 +1,5 @@
-from __future__ import annotations
-
 import math
 import random
-from dataclasses import dataclass, field, replace
-from enum import Enum, auto
-from typing import Iterable
 
 from quadrant_wars import balance_config as cfg
 from quadrant_wars.core.battle_arena import (
@@ -14,47 +9,62 @@ from quadrant_wars.core.battle_arena import (
     BattleUnitType,
 )
 from quadrant_wars.core.map_generator import MapGenerator
+from quadrant_wars.core.marching import ArmyTargetType, MovingArmy
 from quadrant_wars.core.navigation import BattlefieldNavigator
 from quadrant_wars.core.objective import WorldObjective, WorldObjectiveState, WorldObjectiveType
 from quadrant_wars.core.player import BotPlayer, HumanPlayer, Player, STRATEGIES
 from quadrant_wars.core.territory import DevelopmentResult, Territory, TerritorySpecialization
+from quadrant_wars.core.terrain import TerrainMap
 from quadrant_wars.core.unit import DefenderState, SoldierState
 
 
-class ArmyTargetType(Enum):
-    TERRITORY = auto()
-    OBJECTIVE = auto()
-    RETURN = auto()
-
-
-@dataclass(frozen=True)
 class MatchSetup:
-    player_types: tuple[str, ...]
-    bot_strategy_names: tuple[str | None, ...]
-    seed: int
+    def __init__(self, player_types, bot_strategy_names, seed):
+        self.player_types = player_types
+        self.bot_strategy_names = bot_strategy_names
+        self.seed = seed
+
+    def __eq__(self, other):
+        return isinstance(other, MatchSetup) and vars(self) == vars(other)
 
 
-@dataclass(frozen=True)
 class PlayerResult:
-    player_id: int
-    name: str
-    color: tuple[int, int, int]
-    territories: int
-    soldiers: int
-    workers: int
-    defenders: int
-    objectives_claimed: int
+    def __init__(
+        self,
+        player_id,
+        name,
+        color,
+        territories,
+        soldiers,
+        workers,
+        defenders,
+        objectives_claimed,
+    ):
+        self.player_id = player_id
+        self.name = name
+        self.color = color
+        self.territories = territories
+        self.soldiers = soldiers
+        self.workers = workers
+        self.defenders = defenders
+        self.objectives_claimed = objectives_claimed
+
+    def __eq__(self, other):
+        return isinstance(other, PlayerResult) and vars(self) == vars(other)
 
 
-@dataclass(frozen=True)
 class MatchResult:
-    setup: MatchSetup
-    winner_id: int | None
-    duration: float
-    players: tuple[PlayerResult, ...]
+    def __init__(self, setup, winner_id, duration, players):
+        self.setup = setup
+        self.winner_id = winner_id
+        self.duration = duration
+        self.players = players
+
+    def __eq__(self, other):
+        return isinstance(other, MatchResult) and vars(self) == vars(other)
 
     @property
-    def winner(self) -> PlayerResult | None:
+    def winner(self):
         return next(
             (
                 player
@@ -65,135 +75,48 @@ class MatchResult:
         )
 
 
-@dataclass
-class MovingArmy:
-    attacker: Player
-    source_id: int
-    target_type: ArmyTargetType
-    target_id: int
-    units: list[SoldierState]
-    start: tuple[float, float]
-    end: tuple[float, float]
-    path: tuple[tuple[float, float], ...] = ()
-    elapsed: float = 0.0
-    duration: float = 1.0
-    _segment_lengths: tuple[float, ...] = field(init=False, repr=False)
-    _path_length: float = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if len(self.path) < 2:
-            self.path = (self.start, self.end)
-        self._segment_lengths = tuple(
-            math.dist(start, end)
-            for start, end in zip(self.path, self.path[1:])
-        )
-        self._path_length = max(0.01, sum(self._segment_lengths))
-
-    @property
-    def targets_territory(self) -> bool:
-        return self.target_type is ArmyTargetType.TERRITORY
-
-    @property
-    def soldiers(self) -> int:
-        return len(self.units)
-
-    @property
-    def progress(self) -> float:
-        return min(1.0, self.elapsed / max(0.01, self.duration))
-
-    @property
-    def position(self) -> tuple[float, float]:
-        return self._point_at(self.progress)
-
-    @property
-    def heading(self) -> tuple[float, float]:
-        before = self._point_at(max(0.0, self.progress - 0.01))
-        after = self._point_at(min(1.0, self.progress + 0.01))
-        dx = after[0] - before[0]
-        dy = after[1] - before[1]
-        length = max(0.01, math.hypot(dx, dy))
-        return dx / length, dy / length
-
-    @property
-    def path_length(self) -> float:
-        return self._path_length
-
-    def unit_position(self, index: int) -> tuple[float, float]:
-        """Stable formation position for one Soldier along the shared A* path."""
-        if not self.units:
-            return self.position
-        index = max(0, min(index, len(self.units) - 1))
-        columns = max(1, min(16, math.ceil(math.sqrt(len(self.units) * 1.7))))
-        row = index // columns
-        column = index % columns
-        row_count = min(columns, len(self.units) - row * columns)
-        scale = (
-            0.84 if len(self.units) <= 8
-            else 0.72 if len(self.units) <= 20
-            else 0.61 if len(self.units) <= 40
-            else 0.52 if len(self.units) <= 80
-            else 0.44
-        )
-        lateral = (column - (row_count - 1) / 2.0) * max(14.0, 25.0 * scale)
-        trailing = row * max(12.0, 22.0 * scale)
-        heading_x, heading_y = self.heading
-        side_x, side_y = -heading_y, heading_x
-        base_x, base_y = self.position
-        return (
-            base_x + side_x * lateral - heading_x * trailing,
-            base_y + side_y * lateral - heading_y * trailing,
-        )
-
-    @property
-    def unit_positions(self) -> tuple[tuple[float, float], ...]:
-        return tuple(self.unit_position(index) for index in range(len(self.units)))
-
-    def _point_at(self, progress: float) -> tuple[float, float]:
-        remaining = max(0.0, min(1.0, progress)) * self._path_length
-        for index, segment_length in enumerate(self._segment_lengths):
-            if remaining <= segment_length or index == len(self._segment_lengths) - 1:
-                ratio = remaining / max(0.01, segment_length)
-                start = self.path[index]
-                end = self.path[index + 1]
-                return (
-                    start[0] + (end[0] - start[0]) * ratio,
-                    start[1] + (end[1] - start[1]) * ratio,
-                )
-            remaining -= segment_length
-        return self.path[-1]
-
-    def advance(self, dt: float) -> None:
-        self.elapsed += dt * max(0.1, self.attacker.march_speed_multiplier)
 
 
-@dataclass
 class CombatVisualEffect:
-    position: tuple[float, float]
-    attacker_color: tuple[int, int, int]
-    defender_color: tuple[int, int, int]
-    attacker_won: bool
-    soldiers: int
-    elapsed: float = 0.0
-    duration: float = 1.45
+    def __init__(
+        self,
+        position,
+        attacker_color,
+        defender_color,
+        attacker_won,
+        soldiers,
+        elapsed=0.0,
+        duration=1.45,
+    ):
+        self.position = position
+        self.attacker_color = attacker_color
+        self.defender_color = defender_color
+        self.attacker_won = attacker_won
+        self.soldiers = soldiers
+        self.elapsed = elapsed
+        self.duration = duration
+
+    def __eq__(self, other):
+        return isinstance(other, CombatVisualEffect) and vars(self) == vars(other)
 
     @property
-    def progress(self) -> float:
+    def progress(self):
         return min(1.0, self.elapsed / max(0.01, self.duration))
 
 
 class Match:
     def __init__(
         self,
-        player_types: Iterable[str],
-        seed: int | None = None,
-        bot_strategy_classes: list[type] | None = None,
-        headless: bool = False,
-    ) -> None:
+        player_types,
+        seed = None,
+        bot_strategy_classes = None,
+        headless = False,
+    ):
         normalized_player_types = tuple(
             "human" if player_type.lower() == "human" else "bot"
             for player_type in player_types
         )
-        self._players: list[Player] = []
+        self._players = []
         self._seed = seed if seed is not None else random.SystemRandom().randrange(2**63)
         strategy_rng = random.Random(self._seed)
         strategy_classes = bot_strategy_classes[:] if bot_strategy_classes else STRATEGIES[:]
@@ -229,38 +152,48 @@ class Match:
             Territory(i, self._players[i], polygon)
             for i, polygon in enumerate(map_data.polygons)
         ]
-        self._navigator = BattlefieldNavigator(cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT)
-        self._armies: list[MovingArmy] = []
-        self._battles: dict[tuple[BattleArenaType, int], BattleArena] = {}
+        self._terrain = TerrainMap.generate(
+            cfg.WINDOW_WIDTH,
+            cfg.WINDOW_HEIGHT,
+            self._territories,
+            self._seed,
+        )
+        self._navigator = BattlefieldNavigator(
+            cfg.WINDOW_WIDTH,
+            cfg.WINDOW_HEIGHT,
+            terrain=self._terrain,
+        )
+        self._armies = []
+        self._battles = {}
         self._next_unit_id = 1
-        self._effects: list[CombatVisualEffect] = []
-        self._sound_events: list[str] = []
-        self._winner: Player | None = None
+        self._effects = []
+        self._sound_events = []
+        self._winner = None
         self._elapsed = 0.0
-        self._event_log: list[str] = []
+        self._event_log = []
         self._headless = headless
         self._march_sound_timer = 0.0
-        self._recent_territory_attackers: dict[int, dict[int, float]] = {}
+        self._recent_territory_attackers = {}
 
         self._objective_rng = random.Random(self._seed ^ 0x0B1EC71)
-        self._world_objective: WorldObjective | None = None
+        self._world_objective = None
         self._objective_id = 0
         self._next_objective_at = cfg.OBJECTIVE_FIRST_ACTIVE_AT
-        self._last_objective_type: WorldObjectiveType | None = None
-        self._objective_cleanup_at: float | None = None
-        self._claimed_objective_ids: set[int] = set()
-        self._objective_claims_by_player: dict[int, int] = {
+        self._last_objective_type = None
+        self._objective_cleanup_at = None
+        self._claimed_objective_ids = set()
+        self._objective_claims_by_player = {
             player.id: 0 for player in self._players
         }
 
     @classmethod
     def from_setup(
         cls,
-        setup: MatchSetup,
+        setup,
         *,
-        new_seed: bool = False,
-        headless: bool = False,
-    ) -> "Match":
+        new_seed = False,
+        headless = False,
+    ):
         strategy_by_name = {strategy.name: strategy for strategy in STRATEGIES}
         strategy_classes = [
             strategy_by_name.get(name or "", STRATEGIES[0])
@@ -274,35 +207,39 @@ class Match:
         )
 
     @property
-    def players(self) -> list[Player]:
+    def players(self):
         return list(self._players)
 
     @property
-    def setup(self) -> MatchSetup:
+    def setup(self):
         return self._setup
 
     @property
-    def territories(self) -> list[Territory]:
+    def territories(self):
         return list(self._territories)
 
     @property
-    def armies(self) -> list[MovingArmy]:
+    def armies(self):
         return list(self._armies)
 
     @property
-    def battles(self) -> list[BattleArena]:
+    def terrain(self):
+        return self._terrain
+
+    @property
+    def battles(self):
         return list(self._battles.values())
 
     @property
-    def effects(self) -> list[CombatVisualEffect]:
+    def effects(self):
         return list(self._effects)
 
     @property
-    def world_objective(self) -> WorldObjective | None:
+    def world_objective(self):
         return self._world_objective
 
     @property
-    def objective_countdown(self) -> float:
+    def objective_countdown(self):
         objective = self._world_objective
         if objective is None:
             return max(0.0, self._next_objective_at - self._elapsed)
@@ -313,24 +250,24 @@ class Match:
         return max(0.0, self._next_objective_at - self._elapsed)
 
     @property
-    def winner(self) -> Player | None:
+    def winner(self):
         return self._winner
 
     @property
-    def elapsed(self) -> float:
+    def elapsed(self):
         return self._elapsed
 
     @property
-    def event_log(self) -> list[str]:
+    def event_log(self):
         return self._event_log[-6:]
 
-    def pop_sound_events(self) -> list[str]:
+    def pop_sound_events(self):
         events = self._sound_events[:]
         self._sound_events.clear()
         return events
 
-    def result_snapshot(self) -> MatchResult:
-        player_results: list[PlayerResult] = []
+    def result_snapshot(self):
+        player_results = []
         for player in self._players:
             owned = [territory for territory in self._territories if territory.owner is player]
             travelling_soldiers = sum(
@@ -376,10 +313,10 @@ class Match:
             players=tuple(player_results),
         )
 
-    def territories_of(self, player: Player) -> list[Territory]:
+    def territories_of(self, player):
         return [t for t in self._territories if t.owner is player and t.queen.is_alive]
 
-    def home_territory(self, player: Player) -> Territory | None:
+    def home_territory(self, player):
         if not player.is_alive:
             return None
         owned = self.territories_of(player)
@@ -392,14 +329,14 @@ class Match:
         new_capital.is_capital = True
         return new_capital
 
-    def best_attack_source(self, player: Player, target: object) -> Territory | None:
+    def best_attack_source(self, player, target):
         owned = [t for t in self.territories_of(player) if t.soldiers.count > 1]
         if not owned:
             return None
         tx, ty = target.centroid
         return min(owned, key=lambda t: math.hypot(t.centroid[0] - tx, t.centroid[1] - ty))
 
-    def living_players(self) -> list[Player]:
+    def living_players(self):
         alive = []
         for player in self._players:
             if not player.is_alive:
@@ -410,21 +347,21 @@ class Match:
                 self._check_elimination(player)
         return alive
 
-    def territory_at(self, position: tuple[int, int]) -> Territory | None:
+    def territory_at(self, position):
         for territory in self._territories:
             if _point_in_polygon(position, territory.polygon):
                 return territory
         return None
 
-    def territory_in_battle(self, territory_id: int) -> bool:
+    def territory_in_battle(self, territory_id):
         return (BattleArenaType.TERRITORY, territory_id) in self._battles
 
     def develop_territory(
         self,
-        player: Player,
-        territory_id: int,
-        specialization: TerritorySpecialization,
-    ) -> DevelopmentResult:
+        player,
+        territory_id,
+        specialization,
+    ):
         if not player.is_alive or not 0 <= territory_id < len(self._territories):
             return DevelopmentResult(False, None, "Invalid territory")
         territory = self._territories[territory_id]
@@ -438,7 +375,7 @@ class Match:
             self._sound_events.append("develop")
         return result
 
-    def issue_attack(self, source: Territory, target: Territory, soldiers: int) -> bool:
+    def issue_attack(self, source, target, soldiers):
         if soldiers <= 0 or source is target:
             return False
         if not getattr(source.owner, "is_alive", False):
@@ -451,7 +388,7 @@ class Match:
         if target.owner is not source.owner:
             attackers = self._recent_territory_attackers.setdefault(target.id, {})
             attackers[source.owner.id] = self._elapsed + cfg.BOT_RECENT_ATTACK_AVOIDANCE
-        self._dispatch_army(
+        dispatched = self._dispatch_army(
             source.owner,
             source.id,
             ArmyTargetType.TERRITORY,
@@ -460,12 +397,15 @@ class Match:
             source.battle_position,
             target.battle_position,
         )
+        if not dispatched:
+            source.receive_soldiers(units)
+            return False
         target_name = target.owner.name if getattr(target, "owner", None) else "Neutral land"
         self._event_log.append(f"{source.owner.name} sent {len(units)} soldiers to {target_name}")
         self._sound_events.append("attack")
         return True
 
-    def issue_objective_attack(self, source: Territory, soldiers: int) -> bool:
+    def issue_objective_attack(self, source, soldiers):
         objective = self._world_objective
         if objective is None or not objective.active or soldiers <= 0:
             return False
@@ -476,7 +416,7 @@ class Match:
         )
         if not units:
             return False
-        self._dispatch_army(
+        dispatched = self._dispatch_army(
             source.owner,
             source.id,
             ArmyTargetType.OBJECTIVE,
@@ -485,11 +425,36 @@ class Match:
             source.battle_position,
             objective.centroid,
         )
+        if not dispatched:
+            source.receive_soldiers(units)
+            return False
         self._event_log.append(f"{source.owner.name} sent {len(units)} soldiers to {objective.display_name}")
         self._sound_events.append("attack")
         return True
 
-    def objective_commitment_count(self, player: Player) -> int:
+    def cancellable_armies(self, player):
+        """Armies may be recalled only while they are still marching."""
+        return [
+            army for army in self._armies
+            if army.attacker is player and army.can_be_recalled
+        ]
+
+    def cancel_attack(self, player, army):
+        """Turn an outbound march into a return march from its current position."""
+        if army not in self._armies:
+            return False
+        if army.attacker is not player or not army.can_be_recalled:
+            return False
+
+        self._armies.remove(army)
+        self._return_units(player, army.units, army.position)
+        self._event_log.append(
+            f"{player.name} recalled {army.soldiers} soldiers before battle"
+        )
+        self._sound_events.append("click")
+        return True
+
+    def objective_commitment_count(self, player):
         moving = sum(
             army.soldiers
             for army in self._armies
@@ -501,7 +466,7 @@ class Match:
         arena = self._battles.get((BattleArenaType.OBJECTIVE, objective.id))
         return moving + (arena.commitment_count(player) if arena is not None else 0)
 
-    def territory_commitment_count(self, player: Player, territory_id: int) -> int:
+    def territory_commitment_count(self, player, territory_id):
         moving = sum(
             army.soldiers
             for army in self._armies
@@ -512,7 +477,7 @@ class Match:
         arena = self._battles.get((BattleArenaType.TERRITORY, territory_id))
         return moving + (arena.commitment_count(player) if arena is not None else 0)
 
-    def recent_territory_attackers(self, territory_id: int) -> set[int]:
+    def recent_territory_attackers(self, territory_id):
         attackers = self._recent_territory_attackers.get(territory_id, {})
         return {
             player_id
@@ -522,9 +487,9 @@ class Match:
 
     def hostile_territory_commitment_count(
         self,
-        defender: Player,
-        territory_id: int,
-    ) -> int:
+        defender,
+        territory_id,
+    ):
         moving = sum(
             army.soldiers
             for army in self._armies
@@ -541,7 +506,7 @@ class Match:
             if not agent.neutral and agent.owner is not defender
         )
 
-    def offensive_territory_commitment_count(self, player: Player) -> int:
+    def offensive_territory_commitment_count(self, player):
         moving = sum(
             army.soldiers
             for army in self._armies
@@ -558,7 +523,7 @@ class Match:
         )
         return moving + battling
 
-    def update(self, dt: float) -> None:
+    def update(self, dt):
         if self._winner is not None:
             return
         self._elapsed += dt
@@ -570,7 +535,7 @@ class Match:
         for player in self._players:
             player.update(self, dt)
 
-        arrived: list[MovingArmy] = []
+        arrived = []
         for army in self._armies:
             army.advance(dt)
             if army.progress >= 1.0:
@@ -585,7 +550,7 @@ class Match:
             self._sound_events.append("footstep")
             self._march_sound_timer = 0.24
 
-        finished_battles: list[tuple[BattleArena, BattleOutcome]] = []
+        finished_battles = []
         for arena in list(self._battles.values()):
             result = arena.update(dt)
             arena_sounds = arena.pop_sound_events()
@@ -596,7 +561,7 @@ class Match:
         for arena, outcome in finished_battles:
             self._resolve_battle_end(arena, outcome)
 
-        expired: list[CombatVisualEffect] = []
+        expired = []
         for effect in self._effects:
             effect.elapsed += dt
             if effect.progress >= 1.0:
@@ -612,14 +577,14 @@ class Match:
 
     def _dispatch_army(
         self,
-        attacker: Player,
-        source_id: int,
-        target_type: ArmyTargetType,
-        target_id: int,
-        units: list[SoldierState],
-        start: tuple[float, float],
-        end: tuple[float, float],
-    ) -> None:
+        attacker,
+        source_id,
+        target_type,
+        target_id,
+        units,
+        start,
+        end,
+    ):
         target_territory_id = (
             target_id
             if target_type in (ArmyTargetType.TERRITORY, ArmyTargetType.RETURN)
@@ -632,6 +597,8 @@ class Match:
             source_id=source_id,
             target_territory_id=target_territory_id,
         )
+        if len(path) < 2:
+            return False
         distance = sum(math.dist(a, b) for a, b in zip(path, path[1:]))
         duration = max(0.6, distance / cfg.SOLDIER_TRAVEL_SPEED)
         self._armies.append(
@@ -647,22 +614,25 @@ class Match:
                 duration=duration,
             )
         )
+        return True
 
     def _assign_unit_ids(
         self,
-        states: Iterable[SoldierState | DefenderState],
-    ) -> list[SoldierState | DefenderState]:
-        assigned: list[SoldierState | DefenderState] = []
+        states,
+    ):
+        assigned = []
         for state in states:
             if state.unit_id > 0:
                 assigned.append(state)
                 self._next_unit_id = max(self._next_unit_id, state.unit_id + 1)
                 continue
-            assigned.append(replace(state, unit_id=self._next_unit_id))
+            assigned.append(
+                type(state)(self._next_unit_id, state.hp, state.source_id)
+            )
             self._next_unit_id += 1
         return assigned
 
-    def _resolve_arrival(self, army: MovingArmy) -> None:
+    def _resolve_arrival(self, army):
         if army.target_type is ArmyTargetType.RETURN:
             self._resolve_return_arrival(army)
             return
@@ -685,7 +655,7 @@ class Match:
             return
         self._join_territory_battle(army, target)
 
-    def _join_territory_battle(self, army: MovingArmy, target: Territory) -> None:
+    def _join_territory_battle(self, army, target):
         key = (BattleArenaType.TERRITORY, target.id)
         arena = self._battles.get(key)
         created = arena is None
@@ -740,7 +710,7 @@ class Match:
             )
             self._sound_events.append("battle_reinforce")
 
-    def _resolve_battle_end(self, arena: BattleArena, outcome: BattleOutcome) -> None:
+    def _resolve_battle_end(self, arena, outcome):
         key = (arena.arena_type, arena.target_id)
         if self._battles.get(key) is arena:
             del self._battles[key]
@@ -748,7 +718,7 @@ class Match:
             self._resolve_objective_battle_end(arena, outcome)
             return
 
-        target: Territory = arena.target
+        target = arena.target
         defender = target.owner
         if outcome.captured and isinstance(outcome.winner, Player):
             winner = outcome.winner
@@ -794,7 +764,7 @@ class Match:
         self._event_log.append(f"{defender.name} held territory T{target.id + 1}")
         self._sound_events.append("combat_defend")
 
-    def _update_world_objective(self, dt: float) -> None:
+    def _update_world_objective(self, dt):
         objective = self._world_objective
         if objective is None:
             if self._elapsed >= self._next_objective_at - cfg.OBJECTIVE_TELEGRAPH_DURATION:
@@ -814,7 +784,7 @@ class Match:
                 self._world_objective = None
                 self._objective_cleanup_at = None
 
-    def _spawn_world_objective(self) -> None:
+    def _spawn_world_objective(self):
         choices = list(WorldObjectiveType)
         if self._last_objective_type is not None and len(choices) > 1:
             choices.remove(self._last_objective_type)
@@ -829,7 +799,7 @@ class Match:
         self._event_log.append(f"{self._world_objective.display_name} is approaching")
         self._sound_events.append("objective_warning")
 
-    def _activate_world_objective(self) -> None:
+    def _activate_world_objective(self):
         objective = self._world_objective
         if objective is None or objective.state is not WorldObjectiveState.TELEGRAPHING:
             return
@@ -837,25 +807,30 @@ class Match:
         self._event_log.append(f"{objective.display_name} is ready to claim!")
         self._sound_events.append("objective_ready")
 
-    def _choose_objective_position(self) -> tuple[float, float]:
+    def _choose_objective_position(self):
         cx, cy = cfg.WINDOW_WIDTH / 2, cfg.WINDOW_HEIGHT / 2 + 24
-        candidates = [
+        candidates = [gate.center for gate in self._terrain.gates]
+        candidates.extend([
             (cx, cy),
             (cx - 92, cy - 48),
             (cx + 92, cy - 48),
             (cx - 112, cy + 56),
             (cx + 112, cy + 56),
-        ]
+        ])
         self._objective_rng.shuffle(candidates)
+        clear_candidates = [
+            point for point in candidates
+            if not self._terrain.is_blocked(point, clearance=20.0, open_points=(point,))
+        ]
         return max(
-            candidates,
+            clear_candidates or candidates,
             key=lambda point: min(
                 math.hypot(point[0] - territory.centroid[0], point[1] - territory.centroid[1])
                 for territory in self._territories
             ),
         )
 
-    def _resolve_objective_arrival(self, army: MovingArmy) -> None:
+    def _resolve_objective_arrival(self, army):
         objective = self._world_objective
         if objective is None or objective.id != army.target_id or not objective.active:
             self._return_units(army.attacker, army.units, army.position)
@@ -910,9 +885,9 @@ class Match:
 
     def _resolve_objective_battle_end(
         self,
-        arena: BattleArena,
-        outcome: BattleOutcome,
-    ) -> None:
+        arena,
+        outcome,
+    ):
         objective = self._world_objective
         if objective is None or objective.id != arena.target_id:
             return
@@ -944,7 +919,7 @@ class Match:
         self._event_log.append(f"{objective.display_name} resisted every contender")
         self._sound_events.append("combat_defend")
 
-    def _grant_objective_reward(self, player: Player, objective: WorldObjective) -> None:
+    def _grant_objective_reward(self, player, objective):
         if objective.id in self._claimed_objective_ids:
             return
         self._claimed_objective_ids.add(objective.id)
@@ -961,7 +936,7 @@ class Match:
             for territory in self.territories_of(player):
                 territory.queen.heal(cfg.OBJECTIVE_SHRINE_HEAL)
 
-    def _finish_objective_cycle(self) -> None:
+    def _finish_objective_cycle(self):
         objective = self._world_objective
         if objective is None:
             return
@@ -978,13 +953,13 @@ class Match:
 
     def _return_units(
         self,
-        player: Player,
-        units: Iterable[SoldierState],
-        start: tuple[float, float],
-    ) -> None:
+        player,
+        units,
+        start,
+    ):
         if not player.is_alive:
             return
-        by_source: dict[int, list[SoldierState]] = {}
+        by_source = {}
         for state in units:
             if state.hp > 0.0:
                 by_source.setdefault(state.source_id, []).append(state)
@@ -992,7 +967,7 @@ class Match:
             destination = self._return_destination(player, source_id, start)
             if destination is None:
                 continue
-            self._dispatch_army(
+            dispatched = self._dispatch_army(
                 player,
                 source_id,
                 ArmyTargetType.RETURN,
@@ -1001,13 +976,15 @@ class Match:
                 start,
                 destination.battle_position,
             )
+            if not dispatched:
+                destination.receive_soldiers(source_units)
 
     def _return_destination(
         self,
-        player: Player,
-        source_id: int,
-        start: tuple[float, float],
-    ) -> Territory | None:
+        player,
+        source_id,
+        start,
+    ):
         if 0 <= source_id < len(self._territories):
             source = self._territories[source_id]
             if source.owner is player and source.queen.is_alive:
@@ -1022,7 +999,7 @@ class Match:
             ),
         )
 
-    def _resolve_return_arrival(self, army: MovingArmy) -> None:
+    def _resolve_return_arrival(self, army):
         if not army.attacker.is_alive:
             return
         if 0 <= army.target_id < len(self._territories):
@@ -1036,7 +1013,7 @@ class Match:
                 return
         fallback = self._return_destination(army.attacker, army.source_id, army.position)
         if fallback is not None and fallback.id != army.target_id:
-            self._dispatch_army(
+            dispatched = self._dispatch_army(
                 army.attacker,
                 army.source_id,
                 ArmyTargetType.RETURN,
@@ -1045,8 +1022,10 @@ class Match:
                 army.position,
                 fallback.battle_position,
             )
+            if not dispatched:
+                fallback.receive_soldiers(army.units)
 
-    def _check_elimination(self, player: object) -> None:
+    def _check_elimination(self, player):
         if not hasattr(player, "is_alive") or not player.is_alive:
             return
         has_territory = any(t.owner is player and t.queen.is_alive for t in self._territories)
@@ -1058,7 +1037,7 @@ class Match:
             self._event_log.append(f"{player.name} has been eliminated!")
 
 
-def _point_in_polygon(point: tuple[int, int], polygon: list[tuple[float, float]]) -> bool:
+def _point_in_polygon(point, polygon):
     x, y = point
     inside = False
     j = len(polygon) - 1

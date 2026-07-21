@@ -1,5 +1,12 @@
 # Quadrant Wars
 
+## Cập nhật sau vấn đáp
+
+- Phím quân sự (phím thứ hai của mỗi người chơi) mở menu `Tấn công / Gọi quân về / Quay lại`.
+- Trong `Gọi quân về`, phím thứ nhất đổi đạo quân, phím thứ hai ra lệnh quay về và phím thứ ba quay lại. Chỉ đạo quân còn đang hành quân mới hủy được; quân đã vào trận không thể hủy.
+- Sông, núi và tường thành dọc biên giới là địa hình không thể đi qua. Mỗi cặp lãnh thổ kề nhau có một cổng; A* chọn tuyến ngắn nhất qua cổng và bước rút gọn waypoint không đi xuyên vật cản.
+- `core/marching.py` quản lý đạo quân; `core/terrain.py` quản lý địa hình/tường/cổng; `core/navigation.py` tìm đường; `ui/map_features.py` vẽ bản đồ. `game_manager.py` chỉ điều phối trận đấu.
+
 Game đồ án OOP bằng Python 3 + Pygame, triển khai theo mô tả trong `agent.md` và file Word đề xuất.
 
 ## Cách chạy
@@ -50,11 +57,11 @@ python quadrant_wars\main.py
 - Soldier combat dùng atlas v2 bốn hướng với `idle` 4 frame, `run` 8, `attack` 8, `hit` 4 và `death` 6; Worker, Queen và Fortress dùng artwork cùng phong cách.
 - Defender combat dùng atlas riêng với giáo, khiên, tuần tra cổng, đâm giáo, trúng đòn và tử trận.
 - Animation chạy theo delta time và state machine, có nhún bước, nghiêng người, anticipation, lunge, impact, recovery, recoil và hit-flash.
-- Map logic 1280x720 tự co theo cửa sổ; A* dẫn đội hình quanh lâu đài, công trình và vùng sông.
+- Map logic 1280x720 tự co theo cửa sổ; A* dẫn đội hình theo đường ngắn nhất quanh lâu đài, công trình, sông, núi và qua cổng tường biên giới.
 - Điều X Soldier sẽ hiển thị đúng X sprite; từng lính tự áp sát, khóa mục tiêu, bao vây quân phòng thủ rồi chuyển sang đánh lâu đài.
 - Hiệu ứng hành quân không vẽ đường chỉ dẫn; giao tranh có khói, lửa, bụi, tia lửa, vệt chém và phép trượng trực tiếp trên bản đồ.
 - Bốn phe dùng bốn phong cách lâu đài riêng: Western Highland, Northern River, Forest Realm và Sun Court.
-- Sông có water mask và dải phản quang chạy theo hướng dòng chảy; biên giới dùng đường cong hữu cơ nhiều lớp thay cho nét đen thẳng cứng.
+- Sông có water mask và dải phản quang chạy theo hướng dòng chảy; biên giới có tường đá và một cổng cho mỗi cặp lãnh thổ kề nhau.
 - HUD trên cùng tổng hợp vàng, Soldier và Worker của từng người chơi, kể cả Soldier đang hành quân hoặc giao tranh.
 
 ## Giả định thiết kế
@@ -77,12 +84,15 @@ python quadrant_wars\main.py
 - `core/unit.py`: `Unit` abstract base class, `Queen`, `Worker`, `Soldier`, `Defender` và state HP riêng của từng chiến binh.
 - `core/territory.py`: đóng gói food, unit stacks, mua quân, HP và trạng thái lãnh thổ.
 - `core/battlefield.py`: hình học sông, vị trí lâu đài và vị trí công trình dùng chung.
+- `core/terrain.py`: dữ liệu sông, núi, tường biên giới và cổng dùng chung cho game/render.
+- `core/marching.py`: trạng thái và chuyển động của đạo quân đang hành quân.
 - `core/navigation.py`: `BattlefieldNavigator` đóng gói A*, obstacle và waypoint.
 - `core/battle_arena.py`: từng `BattleAgent`, FFA fixed-step, công thành, tiếp viện và kết quả trận.
 - `core/combat.py`: facade `CombatResolver.resolve_instant()`/`apply_result()` dùng chung engine realtime.
 - `core/player.py`: `Player` abstract, `HumanPlayer`, `BotPlayer`, `BotStrategy` và 3 chiến thuật bot.
 - `game/states.py`: State Pattern cho menu, tutorial, intro, playing, pause, resume countdown, transition và game over.
 - `ui/renderer.py`: renderer Pygame tách khỏi logic core.
+- `ui/map_features.py`: vẽ núi, tường biên giới và cổng từ dữ liệu `TerrainMap`.
 - `ui/tutorial.py`: cẩm nang động và sa bàn minh họa.
 
 ## Test và mô phỏng cân bằng
@@ -94,4 +104,3 @@ python -m quadrant_wars.simulation.combat_benchmark
 ```
 
 `balance_config.py` chứa toàn bộ hằng số gameplay và ghi chú changelog cân bằng.
-

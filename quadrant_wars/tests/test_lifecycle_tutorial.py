@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import unittest
 
@@ -21,15 +20,15 @@ from quadrant_wars.ui.tutorial import TutorialView, tutorial_pages
 
 class LifecycleAndTutorialTest(unittest.TestCase):
     @classmethod
-    def setUpClass(cls) -> None:
+    def setUpClass(cls):
         pygame.init()
         cls.screen = pygame.Surface((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT))
 
     @classmethod
-    def tearDownClass(cls) -> None:
+    def tearDownClass(cls):
         pygame.quit()
 
-    def test_intro_pause_tutorial_and_resume_keep_match_frozen(self) -> None:
+    def test_intro_pause_tutorial_and_resume_keep_match_frozen(self):
         playing = PlayingState(Match(["human", "bot"], seed=101, headless=True))
         match = playing._match
 
@@ -54,7 +53,7 @@ class LifecycleAndTutorialTest(unittest.TestCase):
         playing.update(0.25)
         self.assertAlmostEqual(match.elapsed, 0.25)
 
-    def test_tutorial_has_five_dynamic_pages_and_renders_each_page(self) -> None:
+    def test_tutorial_has_five_dynamic_pages_and_renders_each_page(self):
         pages = tutorial_pages()
 
         self.assertEqual(len(pages), 5)
@@ -73,7 +72,7 @@ class LifecycleAndTutorialTest(unittest.TestCase):
         for page_index in range(len(pages)):
             view.draw(page_index, 1.2, 1.0, 0.0)
 
-    def test_tutorial_returns_to_the_exact_menu_or_pause_state(self) -> None:
+    def test_tutorial_returns_to_the_exact_menu_or_pause_state(self):
         menu = MenuState()
         menu_tutorial = TutorialState(menu)
         returned = menu_tutorial.handle_event(
@@ -90,7 +89,7 @@ class LifecycleAndTutorialTest(unittest.TestCase):
         self.assertIsInstance(returned, TransitionState)
         self.assertIs(returned.target, pause)
 
-    def test_restart_preserves_setup_and_seed(self) -> None:
+    def test_restart_preserves_setup_and_seed(self):
         playing = PlayingState(Match(["human", "bot", "bot"], seed=202, headless=True))
         pause = PauseState(playing)
 
@@ -114,7 +113,7 @@ class LifecycleAndTutorialTest(unittest.TestCase):
         restarted = transition.target.playing_state._match
         self.assertEqual(restarted.setup, playing._match.setup)
 
-    def test_rematch_changes_only_seed_and_arbitrary_key_does_nothing(self) -> None:
+    def test_rematch_changes_only_seed_and_arbitrary_key_does_nothing(self):
         original = Match(["human", "bot", "bot"], seed=303, headless=True)
         game_over = GameOverState(original.result_snapshot())
         key_result = game_over.handle_event(
@@ -139,7 +138,7 @@ class LifecycleAndTutorialTest(unittest.TestCase):
             original.setup.bot_strategy_names,
         )
 
-    def test_pause_resume_handoff_keeps_click_sound(self) -> None:
+    def test_pause_resume_handoff_keeps_click_sound(self):
         pause = PauseState(
             PlayingState(Match(["human", "bot"], seed=404, headless=True))
         )

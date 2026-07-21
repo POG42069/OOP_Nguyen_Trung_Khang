@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import math
 import random
@@ -10,7 +9,7 @@ from quadrant_wars.core.territory import TerritorySpecialization
 
 
 class Player(ABC):
-    def __init__(self, player_id: int, name: str, color: tuple[int, int, int]) -> None:
+    def __init__(self, player_id, name, color):
         self._id = player_id
         self._name = name
         self._color = color
@@ -18,53 +17,53 @@ class Player(ABC):
         self._war_banner_time = 0.0
 
     @property
-    def id(self) -> int:
+    def id(self):
         return self._id
 
     @property
-    def name(self) -> str:
+    def name(self):
         return self._name
 
     @property
-    def color(self) -> tuple[int, int, int]:
+    def color(self):
         return self._color
 
     @property
-    def is_alive(self) -> bool:
+    def is_alive(self):
         return self._is_alive
 
     @property
-    def attack_multiplier(self) -> float:
+    def attack_multiplier(self):
         if self._war_banner_time > 0.0:
             return cfg.WAR_BANNER_ATTACK_MULTIPLIER
         return 1.0
 
     @property
-    def march_speed_multiplier(self) -> float:
+    def march_speed_multiplier(self):
         if self._war_banner_time > 0.0:
             return cfg.WAR_BANNER_MARCH_MULTIPLIER
         return 1.0
 
     @property
-    def war_banner_time(self) -> float:
+    def war_banner_time(self):
         return self._war_banner_time
 
-    def apply_war_banner(self, duration: float = cfg.WAR_BANNER_DURATION) -> None:
+    def apply_war_banner(self, duration = cfg.WAR_BANNER_DURATION):
         self._war_banner_time = max(self._war_banner_time, duration)
 
-    def _update_buffs(self, dt: float) -> None:
+    def _update_buffs(self, dt):
         self._war_banner_time = max(0.0, self._war_banner_time - dt)
 
-    def eliminate(self) -> None:
+    def eliminate(self):
         self._is_alive = False
 
     @abstractmethod
-    def update(self, match: object, dt: float) -> None:
+    def update(self, match, dt):
         """Per-player decision hook."""
 
 
 class HumanPlayer(Player):
-    def update(self, match: object, dt: float) -> None:
+    def update(self, match, dt):
         self._update_buffs(dt)
         return None
 
@@ -90,13 +89,13 @@ class BotStrategy(ABC):
     avoid_two_fronts = False
     upgrade_force = 10
 
-    def should_buy_worker(self, home: object) -> bool:
+    def should_buy_worker(self, home):
         if home.workers.count >= min(cfg.MAX_WORKERS_PER_TERRITORY, self.max_workers):
             return False
         total = max(1, home.workers.count + home.soldiers.count)
         return home.workers.count / total < self.worker_target_ratio
 
-    def defense_reserve(self, soldier_count: int) -> int:
+    def defense_reserve(self, soldier_count):
         if soldier_count <= 0:
             return 0
         return min(
@@ -104,7 +103,7 @@ class BotStrategy(ABC):
             max(1, math.ceil(soldier_count * self.reserve_ratio)),
         )
 
-    def choose_target(self, match: object, bot: "BotPlayer", source: object) -> object | None:
+    def choose_target(self, match, bot, source):
         enemies = [
             t for t in match.territories
             if t.owner is not bot and getattr(t.owner, "is_alive", False) and t.queen.is_alive
@@ -113,7 +112,7 @@ class BotStrategy(ABC):
             return None
         sx, sy = source.centroid
 
-        third_party_commitments: dict[int, int] = {}
+        third_party_commitments = {}
         for territory in enemies:
             commitment = sum(
                 army.soldiers
@@ -151,7 +150,7 @@ class BotStrategy(ABC):
         if uncontested:
             enemies = uncontested
 
-        def target_score(territory: object) -> tuple[float, float, float]:
+        def target_score(territory):
             owner_regions = sum(1 for item in match.territories if item.owner is territory.owner)
             economy_level = (
                 territory.specialization_level
@@ -180,7 +179,7 @@ class BotStrategy(ABC):
             key=target_score,
         )
 
-    def attack_amount(self, source: object, target: object) -> int:
+    def attack_amount(self, source, target):
         reserve = self.defense_reserve(source.soldiers.count)
         available = max(0, source.soldiers.count - reserve)
         required = math.ceil(target.defense_value_legacy * self.attack_margin)
@@ -189,7 +188,7 @@ class BotStrategy(ABC):
         wanted = max(required, int(source.soldiers.count * self.attack_ratio))
         return max(0, min(available, wanted))
 
-    def probe_amount(self, source: object, target: object) -> int:
+    def probe_amount(self, source, target):
         available = max(
             0,
             source.soldiers.count
@@ -213,10 +212,10 @@ class BotStrategy(ABC):
 
     def choose_specialization(
         self,
-        match: object,
-        bot: "BotPlayer",
-        territory: object,
-    ) -> TerritorySpecialization:
+        match,
+        bot,
+        territory,
+    ):
         enemies = [
             t for t in match.territories
             if t.owner is not bot and getattr(t.owner, "is_alive", False)
@@ -251,7 +250,7 @@ class BotStrategy(ABC):
             return TerritorySpecialization.FORTRESS
         return TerritorySpecialization.ECONOMY
 
-    def objective_threshold(self, objective_type: WorldObjectiveType) -> int:
+    def objective_threshold(self, objective_type):
         return self.objective_min_soldiers
 
 
@@ -277,10 +276,10 @@ class AggressiveStrategy(BotStrategy):
 
     def choose_specialization(
         self,
-        match: object,
-        bot: "BotPlayer",
-        territory: object,
-    ) -> TerritorySpecialization:
+        match,
+        bot,
+        territory,
+    ):
         return TerritorySpecialization.BARRACKS
 
 
@@ -301,7 +300,7 @@ class EconomicStrategy(BotStrategy):
     threat_awareness = 0.65
     upgrade_force = 12
 
-    def should_buy_worker(self, home: object) -> bool:
+    def should_buy_worker(self, home):
         if home.workers.count >= min(cfg.MAX_WORKERS_PER_TERRITORY, self.max_workers):
             return False
         marginal_income = (
@@ -313,13 +312,13 @@ class EconomicStrategy(BotStrategy):
 
     def choose_specialization(
         self,
-        match: object,
-        bot: "BotPlayer",
-        territory: object,
-    ) -> TerritorySpecialization:
+        match,
+        bot,
+        territory,
+    ):
         return TerritorySpecialization.ECONOMY
 
-    def objective_threshold(self, objective_type: WorldObjectiveType) -> int:
+    def objective_threshold(self, objective_type):
         if objective_type is WorldObjectiveType.CARAVAN:
             return 5
         return self.objective_min_soldiers
@@ -345,10 +344,10 @@ class BalancedStrategy(BotStrategy):
 
     def choose_specialization(
         self,
-        match: object,
-        bot: "BotPlayer",
-        territory: object,
-    ) -> TerritorySpecialization:
+        match,
+        bot,
+        territory,
+    ):
         owned = match.territories_of(bot)
         enemies = [
             item
@@ -388,12 +387,12 @@ STRATEGIES = [AggressiveStrategy, BalancedStrategy, EconomicStrategy]
 class BotPlayer(Player):
     def __init__(
         self,
-        player_id: int,
-        name: str,
-        color: tuple[int, int, int],
-        strategy: BotStrategy | None = None,
-        decision_phase: float | None = None,
-    ) -> None:
+        player_id,
+        name,
+        color,
+        strategy = None,
+        decision_phase = None,
+    ):
         super().__init__(player_id, name, color)
         self._strategy = strategy or BalancedStrategy()
         phase = random.random() if decision_phase is None else decision_phase
@@ -401,10 +400,10 @@ class BotPlayer(Player):
         self._attack_cooldown = cfg.BOT_MIN_ATTACK_INTERVAL
 
     @property
-    def strategy(self) -> BotStrategy:
+    def strategy(self):
         return self._strategy
 
-    def update(self, match: object, dt: float) -> None:
+    def update(self, match, dt):
         self._update_buffs(dt)
         if not self.is_alive:
             return
@@ -517,7 +516,7 @@ class BotPlayer(Player):
                     self._attack_cooldown = cfg.BOT_MIN_ATTACK_INTERVAL
                     return
 
-    def _incoming_strength(self, match: object, territory: object) -> int:
+    def _incoming_strength(self, match, territory):
         counter = getattr(match, "hostile_territory_commitment_count", None)
         if counter is not None:
             return int(counter(self, territory.id))
@@ -529,7 +528,7 @@ class BotPlayer(Player):
             and army.attacker is not self
         )
 
-    def _try_reinforce_incoming(self, match: object, owned: list[object]) -> bool:
+    def _try_reinforce_incoming(self, match, owned):
         threatened = [
             (self._incoming_strength(match, territory), territory)
             for territory in owned
@@ -562,7 +561,7 @@ class BotPlayer(Player):
                 return True
         return False
 
-    def _try_objective_attack(self, match: object, owned: list[object]) -> bool:
+    def _try_objective_attack(self, match, owned):
         objective = getattr(match, "world_objective", None)
         if objective is None or not objective.active:
             return False

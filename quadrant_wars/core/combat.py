@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from dataclasses import dataclass, replace
-from typing import Iterable
 
 from quadrant_wars import balance_config as cfg
 from quadrant_wars.core.battle_arena import (
@@ -14,14 +10,17 @@ from quadrant_wars.core.battle_arena import (
 from quadrant_wars.core.unit import DefenderState, SoldierState
 
 
-@dataclass(frozen=True)
 class CombatResult:
-    attacker_won: bool
-    surviving_states: tuple[SoldierState, ...] = ()
-    territory_id: int = -1
+    def __init__(self, attacker_won, surviving_states=(), territory_id=-1):
+        self.attacker_won = attacker_won
+        self.surviving_states = surviving_states
+        self.territory_id = territory_id
+
+    def __eq__(self, other):
+        return isinstance(other, CombatResult) and vars(self) == vars(other)
 
     @property
-    def surviving_attackers(self) -> int:
+    def surviving_attackers(self):
         return len(self.surviving_states)
 
 
@@ -37,10 +36,10 @@ class CombatResolver:
 
     @staticmethod
     def resolve_instant(
-        attacking_soldiers: int | Iterable[SoldierState],
-        territory: object,
-        attacker: object | None = None,
-    ) -> CombatResult:
+        attacking_soldiers,
+        territory,
+        attacker = None,
+    ):
         attacker = attacker or _AnonymousAttacker()
         arena_type = (
             BattleArenaType.OBJECTIVE
@@ -84,7 +83,7 @@ class CombatResolver:
                 fortress_defenders,
             )
 
-        outcome: BattleOutcome | None = None
+        outcome = None
         for _ in range(30 * 600):
             outcome = arena.update(SIMULATION_STEP)
             if outcome is not None:
@@ -116,23 +115,23 @@ class CombatResolver:
         )
 
     @staticmethod
-    def apply_result(result: CombatResult, territory: object, attacker: object) -> None:
+    def apply_result(result, territory, attacker):
         if result.attacker_won:
             territory.reset_after_capture(attacker, result.surviving_states)
 
     @staticmethod
     def _normalize_ids(
-        states: list[SoldierState | DefenderState],
-        next_id: int,
-    ) -> tuple[list[SoldierState | DefenderState], int]:
-        normalized: list[SoldierState | DefenderState] = []
+        states,
+        next_id,
+    ):
+        normalized = []
         for state in states:
-            normalized.append(replace(state, unit_id=next_id))
+            normalized.append(type(state)(next_id, state.hp, state.source_id))
             next_id += 1
         return normalized, next_id
 
     @staticmethod
-    def _restore_defenders(arena: BattleArena, territory: object) -> None:
+    def _restore_defenders(arena, territory):
         territory.receive_soldiers(
             agent.export_state()
             for agent in arena.living_agents

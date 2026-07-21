@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import math
 import unittest
@@ -16,25 +15,25 @@ from quadrant_wars.ui.renderer import Renderer
 
 class RendererArmyTest(unittest.TestCase):
     @classmethod
-    def setUpClass(cls) -> None:
+    def setUpClass(cls):
         pygame.init()
 
     @classmethod
-    def tearDownClass(cls) -> None:
+    def tearDownClass(cls):
         pygame.quit()
 
-    def _renderer_spy(self) -> tuple[Renderer, list[tuple]]:
+    def _renderer_spy(self):
         renderer = Renderer.__new__(Renderer)
         renderer._screen = pygame.Surface((640, 480), pygame.SRCALPHA)
         renderer._unit_positions = {}
         renderer._unit_targets = {}
         renderer._unit_facing = {}
         renderer._frame_dt = 1.0 / 60.0
-        calls: list[tuple] = []
+        calls = []
         renderer._draw_unit_sprite = lambda *args, **kwargs: calls.append((args, kwargs))
         return renderer, calls
 
-    def test_marching_army_draws_every_dispatched_soldier(self) -> None:
+    def test_marching_army_draws_every_dispatched_soldier(self):
         renderer, calls = self._renderer_spy()
         player = HumanPlayer(0, "Player", (214, 84, 76))
         army = MovingArmy(
@@ -52,7 +51,7 @@ class RendererArmyTest(unittest.TestCase):
 
         self.assertEqual(len(calls), 37)
 
-    def test_combat_draws_all_living_attackers_and_defenders(self) -> None:
+    def test_combat_draws_all_living_attackers_and_defenders(self):
         renderer, calls = self._renderer_spy()
         attacker = HumanPlayer(0, "Attacker", (214, 84, 76))
         defender = HumanPlayer(1, "Defender", (70, 137, 214))
@@ -80,7 +79,7 @@ class RendererArmyTest(unittest.TestCase):
         self.assertEqual(len(attacker_calls), 23)
         self.assertTrue(all(call[1]["animation"] == "walk" for call in attacker_calls))
 
-    def test_unit_smoothing_never_exceeds_the_role_speed_limit(self) -> None:
+    def test_unit_smoothing_never_exceeds_the_role_speed_limit(self):
         renderer, _ = self._renderer_spy()
         renderer._unit_positions["player-1-worker"] = (0.0, 0.0)
 
@@ -94,7 +93,7 @@ class RendererArmyTest(unittest.TestCase):
         self.assertLessEqual(math.dist((0.0, 0.0), position), 44.0 / 60.0 + 1e-6)
         self.assertLessEqual(speed, 44.0 + 1e-6)
 
-    def test_player_one_worker_stops_moving_during_work_animation(self) -> None:
+    def test_player_one_worker_stops_moving_during_work_animation(self):
         renderer, _ = self._renderer_spy()
         player = HumanPlayer(0, "Player 1", (214, 84, 76))
         territory = Territory(0, player, [(80, 80), (560, 80), (560, 400), (80, 400)])
@@ -105,7 +104,7 @@ class RendererArmyTest(unittest.TestCase):
 
         self.assertEqual(renderer._unit_positions["0:worker:0"], (210.0, 220.0))
 
-    def test_new_worker_spawn_keeps_a_stable_speed_limited_route(self) -> None:
+    def test_new_worker_spawn_keeps_a_stable_speed_limited_route(self):
         renderer, _ = self._renderer_spy()
         player = HumanPlayer(0, "Player 1", (214, 84, 76))
         territory = Territory(0, player, [(80, 80), (560, 80), (560, 400), (80, 400)])

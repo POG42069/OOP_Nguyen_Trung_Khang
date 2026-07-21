@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import unittest
 
@@ -14,23 +13,24 @@ from quadrant_wars.game.states import (
     _attack_amount_for_ratio,
 )
 from quadrant_wars.game.game_manager import Match
+from quadrant_wars.game.game_manager import ArmyTargetType
 
 
 class PlayerStateTest(unittest.TestCase):
-    def test_every_player_starts_with_one_soldier(self) -> None:
+    def test_every_player_starts_with_one_soldier(self):
         match = Match(["human"] * 4, seed=2)
 
         self.assertEqual(cfg.STARTING_SOLDIERS, 1)
         self.assertTrue(all(territory.soldiers.count == 1 for territory in match.territories))
 
-    def test_attack_percentages_preserve_one_defender(self) -> None:
+    def test_attack_percentages_preserve_one_defender(self):
         self.assertEqual(_attack_amount_for_ratio(12, 0.0), 0)
         self.assertEqual(_attack_amount_for_ratio(1, 0.66), 0)
         self.assertEqual(_attack_amount_for_ratio(6, 0.33), 2)
         self.assertEqual(_attack_amount_for_ratio(6, 0.66), 4)
         self.assertEqual(_attack_amount_for_ratio(2, 0.66), 1)
 
-    def test_zero_percent_cancels_without_dispatching_army(self) -> None:
+    def test_zero_percent_cancels_without_dispatching_army(self):
         state = PlayingState(Match(["human", "bot"], seed=8))
         player_input = state._player_inputs[0]
         source = state._match.territories[0]
@@ -45,7 +45,7 @@ class PlayerStateTest(unittest.TestCase):
         self.assertEqual(source.soldiers.count, before)
         self.assertEqual(state._match.armies, [])
 
-    def test_plain_q_opens_summon_without_ctrl(self) -> None:
+    def test_plain_q_opens_summon_without_ctrl(self):
         state = PlayingState(Match(["human", "bot"], seed=3))
         q_without_modifier = pygame.event.Event(
             pygame.KEYDOWN,
@@ -59,7 +59,7 @@ class PlayerStateTest(unittest.TestCase):
 
         self.assertEqual(state._player_inputs[0].state, PlayerMenuState.SUMMON)
 
-    def test_physical_q_key_is_accepted_when_layout_keycode_differs(self) -> None:
+    def test_physical_q_key_is_accepted_when_layout_keycode_differs(self):
         state = PlayingState(Match(["human", "bot"], seed=3))
         q_on_another_layout = pygame.event.Event(
             pygame.KEYDOWN,
@@ -73,7 +73,7 @@ class PlayerStateTest(unittest.TestCase):
 
         self.assertEqual(state._player_inputs[0].state, PlayerMenuState.SUMMON)
 
-    def test_each_player_can_recruit_from_a_selected_owned_territory(self) -> None:
+    def test_each_player_can_recruit_from_a_selected_owned_territory(self):
         for player_index in range(4):
             state = PlayingState(Match(["human"] * 4, seed=20 + player_index))
             player = state._match.players[player_index]
@@ -105,7 +105,7 @@ class PlayerStateTest(unittest.TestCase):
             self.assertEqual(home.spawn_queue_size, 0)
             self.assertEqual(captured.spawn_queue_size, 1)
 
-    def test_each_human_keyset_opens_strategy(self) -> None:
+    def test_each_human_keyset_opens_strategy(self):
         state = PlayingState(Match(["human", "human", "human", "human"], seed=4))
 
         for player_index, player_input in state._player_inputs.items():
@@ -113,7 +113,7 @@ class PlayerStateTest(unittest.TestCase):
             self.assertEqual(player_input.state, PlayerMenuState.STRATEGY, player_index)
             player_input.reset()
 
-    def test_development_flow_spends_local_gold_and_applies_branch(self) -> None:
+    def test_development_flow_spends_local_gold_and_applies_branch(self):
         state = PlayingState(Match(["human", "bot"], seed=5))
         player_input = state._player_inputs[0]
         territory = state._match.territories[0]
@@ -130,7 +130,7 @@ class PlayerStateTest(unittest.TestCase):
         self.assertEqual(territory.specialization, TerritorySpecialization.ECONOMY)
         self.assertEqual(territory.specialization_level, 1)
 
-    def test_strategy_opens_objective_attack_amount_when_ready(self) -> None:
+    def test_strategy_opens_objective_attack_amount_when_ready(self):
         state = PlayingState(Match(["human", "bot"], seed=6))
         player_input = state._player_inputs[0]
         objective = WorldObjective(2, WorldObjectiveType.CARAVAN, (640.0, 360.0))
@@ -142,6 +142,22 @@ class PlayerStateTest(unittest.TestCase):
 
         self.assertEqual(player_input.state, PlayerMenuState.ATTACK_AMOUNT)
         self.assertIs(player_input.target, objective)
+
+    def test_military_menu_recalls_an_army_that_is_still_marching(self):
+        state = PlayingState(Match(["human", "bot"], seed=19, headless=True))
+        player_input = state._player_inputs[0]
+        source = state._match.territories[0]
+        source.add_soldiers(6)
+        state._match.issue_attack(source, state._match.territories[1], 4)
+
+        state._handle_player_key(player_input, player_input.key2, None)
+        self.assertEqual(player_input.state, PlayerMenuState.MILITARY)
+        state._handle_player_key(player_input, player_input.key2, None)
+        self.assertEqual(player_input.state, PlayerMenuState.RETREAT)
+        state._handle_player_key(player_input, player_input.key2, None)
+
+        self.assertEqual(player_input.state, PlayerMenuState.IDLE)
+        self.assertEqual(state._match.armies[0].target_type, ArmyTargetType.RETURN)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import argparse
 import math
@@ -20,12 +19,12 @@ from quadrant_wars.ui.renderer import Renderer
 
 
 def _deployment(
-    first_id: int,
-    amount: int,
-    source_id: int,
-    center: tuple[float, float],
-    side: int,
-) -> tuple[list[SoldierState], list[tuple[float, float]]]:
+    first_id,
+    amount,
+    source_id,
+    center,
+    side,
+):
     columns = 14
     units = [
         SoldierState(first_id + index, float(cfg.SOLDIER_HP), source_id)
@@ -43,7 +42,7 @@ def _deployment(
     return units, positions
 
 
-def run_benchmark(frames: int = 180, warmup: int = 30) -> dict[str, float | int]:
+def run_benchmark(frames = 180, warmup = 30):
     pygame.init()
     screen = pygame.Surface((cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT))
     renderer = Renderer(screen)
@@ -75,7 +74,7 @@ def run_benchmark(frames: int = 180, warmup: int = 30) -> dict[str, float | int]
         agent.attack_damage = 0.0
     match._battles[(BattleArenaType.OBJECTIVE, objective.id)] = arena
 
-    samples: list[float] = []
+    samples = []
     try:
         for frame in range(max(1, warmup + frames)):
             started = time.perf_counter()
@@ -101,7 +100,7 @@ def run_benchmark(frames: int = 180, warmup: int = 30) -> dict[str, float | int]
     }
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description="Benchmark a 200-Soldier combat render.")
     parser.add_argument("--frames", type=int, default=180)
     parser.add_argument("--warmup", type=int, default=30)

@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import unittest
 
@@ -16,7 +15,7 @@ from quadrant_wars.core.territory import Territory, TerritorySpecialization
 from quadrant_wars.core.unit import DefenderState, SoldierState
 
 
-def make_territory(soldiers: int, workers: int = 1) -> Territory:
+def make_territory(soldiers, workers = 1):
     owner = HumanPlayer(0, "Defender", (255, 0, 0))
     territory = Territory(0, owner, [(0, 0), (100, 0), (100, 100), (0, 100)])
     territory.soldiers.remove(territory.soldiers.count)
@@ -26,14 +25,14 @@ def make_territory(soldiers: int, workers: int = 1) -> Territory:
     return territory
 
 
-def states(first_id: int, amount: int, source_id: int = 0, hp: float = cfg.SOLDIER_HP) -> list[SoldierState]:
+def states(first_id, amount, source_id = 0, hp = cfg.SOLDIER_HP):
     return [
         SoldierState(first_id + index, float(hp), source_id)
         for index in range(amount)
     ]
 
 
-def run_arena(arena: BattleArena, seconds: float = 120.0):
+def run_arena(arena, seconds = 120.0):
     result = None
     for _ in range(int(seconds / SIMULATION_STEP)):
         result = arena.update(SIMULATION_STEP)
@@ -43,7 +42,7 @@ def run_arena(arena: BattleArena, seconds: float = 120.0):
 
 
 class CombatResolverTest(unittest.TestCase):
-    def test_opening_territory_requires_three_attackers(self) -> None:
+    def test_opening_territory_requires_three_attackers(self):
         attacker = HumanPlayer(1, "Attacker", (0, 0, 255))
 
         failed = CombatResolver.resolve_instant(2, make_territory(1, 1), attacker)
@@ -52,7 +51,7 @@ class CombatResolverTest(unittest.TestCase):
         self.assertFalse(failed.attacker_won)
         self.assertTrue(captured.attacker_won)
 
-    def test_failed_attack_preserves_individual_defender_damage(self) -> None:
+    def test_failed_attack_preserves_individual_defender_damage(self):
         territory = make_territory(soldiers=6, workers=1)
 
         result = CombatResolver.resolve_instant(4, territory)
@@ -62,7 +61,7 @@ class CombatResolverTest(unittest.TestCase):
         self.assertLess(territory.soldiers.total_hp, 6 * cfg.SOLDIER_HP)
         self.assertTrue(territory.queen.is_alive)
 
-    def test_damage_to_queen_persists_between_assaults(self) -> None:
+    def test_damage_to_queen_persists_between_assaults(self):
         territory = make_territory(soldiers=0, workers=0)
         attacker = HumanPlayer(1, "Attacker", (0, 0, 255))
 
@@ -84,7 +83,7 @@ class CombatResolverTest(unittest.TestCase):
             sum(state.hp for state in second.surviving_states),
         )
 
-    def test_realtime_arena_matches_instant_resolution(self) -> None:
+    def test_realtime_arena_matches_instant_resolution(self):
         instant_target = make_territory(soldiers=6, workers=1)
         realtime_target = make_territory(soldiers=6, workers=1)
         attacker = HumanPlayer(1, "Attacker", (0, 0, 255))
@@ -123,7 +122,7 @@ class CombatResolverTest(unittest.TestCase):
             instant_target.queen.front_hp,
         )
 
-    def test_fortress_defenders_match_instant_and_realtime_resolution(self) -> None:
+    def test_fortress_defenders_match_instant_and_realtime_resolution(self):
         instant_target = make_territory(soldiers=1, workers=1)
         realtime_target = make_territory(soldiers=1, workers=1)
         for territory in (instant_target, realtime_target):
@@ -193,7 +192,7 @@ class CombatResolverTest(unittest.TestCase):
             instant_target.queen.front_hp,
         )
 
-    def test_simultaneous_impacts_allow_a_true_double_knockout(self) -> None:
+    def test_simultaneous_impacts_allow_a_true_double_knockout(self):
         objective = WorldObjective(1, WorldObjectiveType.CARAVAN, (100.0, 100.0))
         objective.soldiers.remove(objective.soldiers.count)
         first = HumanPlayer(0, "First", (220, 70, 60))
@@ -207,7 +206,7 @@ class CombatResolverTest(unittest.TestCase):
         self.assertEqual(len(arena.living_agents), 0)
         self.assertEqual(len(arena.visible_agents), 2)
 
-    def test_targeting_uses_nearest_enemy_and_caps_six_attackers(self) -> None:
+    def test_targeting_uses_nearest_enemy_and_caps_six_attackers(self):
         objective = WorldObjective(2, WorldObjectiveType.WAR_BANNER, (100.0, 100.0))
         objective.soldiers.remove(objective.soldiers.count)
         first = HumanPlayer(0, "First", (220, 70, 60))
@@ -237,7 +236,7 @@ class CombatResolverTest(unittest.TestCase):
         ]
         self.assertEqual(len(targeting_near), MAX_MELEE_SLOTS)
 
-    def test_two_to_four_faction_ffa_keeps_one_shared_arena(self) -> None:
+    def test_two_to_four_faction_ffa_keeps_one_shared_arena(self):
         for faction_count in (2, 3, 4):
             with self.subTest(faction_count=faction_count):
                 objective = WorldObjective(10 + faction_count, WorldObjectiveType.CARAVAN, (100.0, 100.0))
@@ -259,7 +258,7 @@ class CombatResolverTest(unittest.TestCase):
                 self.assertTrue(result.captured)
                 self.assertIs(result.winner, players[0])
 
-    def test_same_faction_reinforcement_joins_without_new_faction(self) -> None:
+    def test_same_faction_reinforcement_joins_without_new_faction(self):
         objective = WorldObjective(30, WorldObjectiveType.ANCIENT_SHRINE, (100.0, 100.0))
         objective.soldiers.remove(objective.soldiers.count)
         player = HumanPlayer(0, "Player", (220, 70, 60))
@@ -276,7 +275,7 @@ class CombatResolverTest(unittest.TestCase):
             {4, 6},
         )
 
-    def test_ffa_result_does_not_depend_on_faction_registration_order(self) -> None:
+    def test_ffa_result_does_not_depend_on_faction_registration_order(self):
         players = [
             HumanPlayer(index, f"P{index}", (70 + index * 55, 90, 210 - index * 35))
             for index in range(3)
@@ -287,7 +286,7 @@ class CombatResolverTest(unittest.TestCase):
             (states(40, 3, 2), [(94.0 + index * 7.0, 62.0) for index in range(3)]),
         )
 
-        def resolve(order: tuple[int, ...]):
+        def resolve(order):
             objective = WorldObjective(44, WorldObjectiveType.CARAVAN, (100.0, 100.0))
             objective.soldiers.remove(objective.soldiers.count)
             arena = BattleArena(BattleArenaType.OBJECTIVE, objective)
@@ -311,7 +310,7 @@ class CombatResolverTest(unittest.TestCase):
 
         self.assertEqual(resolve((0, 1, 2)), resolve((2, 1, 0)))
 
-    def test_arena_never_replaces_or_drops_individual_soldier_agents(self) -> None:
+    def test_arena_never_replaces_or_drops_individual_soldier_agents(self):
         objective = WorldObjective(45, WorldObjectiveType.WAR_BANNER, (100.0, 100.0))
         objective.soldiers.remove(objective.soldiers.count)
         first = HumanPlayer(0, "First", (220, 70, 60))
@@ -329,7 +328,7 @@ class CombatResolverTest(unittest.TestCase):
 
         self.assertTrue(arena.finished)
 
-    def test_apply_result_is_noop_after_failed_assault(self) -> None:
+    def test_apply_result_is_noop_after_failed_assault(self):
         territory = make_territory(soldiers=6, workers=1)
         attacker = HumanPlayer(1, "Attacker", (0, 0, 255))
 

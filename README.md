@@ -4,6 +4,13 @@
 
 <h1 align="center">Quadrant Wars</h1>
 
+## Cập nhật sau vấn đáp
+
+- Có thể gọi từng đạo quân về khi quân vẫn đang hành quân; quân đã chạm thành và vào trận thì không thể hủy.
+- Sông, núi và tường thành dọc biên giới là vùng cấm. Mỗi cặp lãnh thổ kề nhau có một cổng; quân dùng A* để đi theo tuyến ngắn nhất qua cổng phù hợp.
+- Logic được tách rõ: `core/marching.py` quản lý đạo quân, `core/terrain.py` quản lý địa hình/tường/cổng, `core/navigation.py` tìm đường, `ui/map_features.py` vẽ địa hình và `game_manager.py` điều phối.
+- Cách điều khiển: mở phím quân sự → `Tấn công / Gọi quân về / Quay lại`; trong màn gọi quân, đổi đạo quân rồi xác nhận gọi về.
+
 <p align="center">
   <strong>Game chiến thuật thời gian thực về chinh phục lãnh thổ, xây dựng vương quốc và giao tranh trên bản đồ động.</strong>
 </p>

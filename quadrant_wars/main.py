@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -13,7 +12,7 @@ from quadrant_wars.game.states import MenuState
 from quadrant_wars.ui.sound import SoundManager
 
 
-def main() -> None:
+def main():
     pygame.mixer.pre_init(44100, -16, 1, 512)
     pygame.init()
     sound = SoundManager()

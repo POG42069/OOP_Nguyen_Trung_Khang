@@ -1,14 +1,8 @@
-from __future__ import annotations
-
 import math
-from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Iterable
 
 from quadrant_wars import balance_config as cfg
 from quadrant_wars.core.unit import DefenderState, SoldierState
-
-Point = tuple[float, float]
 
 SIMULATION_STEP = 1.0 / 30.0
 COMBAT_MOVE_SPEED = 72.0
@@ -38,51 +32,85 @@ class BattlePhase(Enum):
     RESOLVED = auto()
 
 
-@dataclass
 class BattleAgent:
-    unit_id: int
-    owner: object
-    color: tuple[int, int, int]
-    source_id: int
-    hp: float
-    max_hp: float
-    position: Point
-    unit_type: BattleUnitType = BattleUnitType.SOLDIER
-    attack_damage: float = float(cfg.SOLDIER_ATK)
-    attack_speed: float = cfg.SOLDIER_ATK_SPEED
-    move_speed: float = COMBAT_MOVE_SPEED
-    attack_range: float = MELEE_RANGE
-    impact_delay: float = ATTACK_IMPACT_DELAY
-    attack_animation_duration: float = ATTACK_ANIMATION_DURATION
-    guard_radius: float | None = None
-    home_position: Point | None = None
-    velocity: Point = (0.0, 0.0)
-    facing: Point = (1.0, 0.0)
-    target_id: int | None = None
-    engagement_slot: int = 0
-    attack_cooldown: float = 0.0
-    opening_delay: float = 0.0
-    impact_timer: float = 0.0
-    pending_target_id: int | None = None
-    animation: str = "run"
-    animation_time: float = 0.0
-    hit_flash: float = 0.0
-    death_elapsed: float = 0.0
-    neutral: bool = False
+    def __init__(
+        self,
+        unit_id,
+        owner,
+        color,
+        source_id,
+        hp,
+        max_hp,
+        position,
+        unit_type=BattleUnitType.SOLDIER,
+        attack_damage=float(cfg.SOLDIER_ATK),
+        attack_speed=cfg.SOLDIER_ATK_SPEED,
+        move_speed=COMBAT_MOVE_SPEED,
+        attack_range=MELEE_RANGE,
+        impact_delay=ATTACK_IMPACT_DELAY,
+        attack_animation_duration=ATTACK_ANIMATION_DURATION,
+        guard_radius=None,
+        home_position=None,
+        velocity=(0.0, 0.0),
+        facing=(1.0, 0.0),
+        target_id=None,
+        engagement_slot=0,
+        attack_cooldown=0.0,
+        opening_delay=0.0,
+        impact_timer=0.0,
+        pending_target_id=None,
+        animation="run",
+        animation_time=0.0,
+        hit_flash=0.0,
+        death_elapsed=0.0,
+        neutral=False,
+    ):
+        self.unit_id = unit_id
+        self.owner = owner
+        self.color = color
+        self.source_id = source_id
+        self.hp = hp
+        self.max_hp = max_hp
+        self.position = position
+        self.unit_type = unit_type
+        self.attack_damage = attack_damage
+        self.attack_speed = attack_speed
+        self.move_speed = move_speed
+        self.attack_range = attack_range
+        self.impact_delay = impact_delay
+        self.attack_animation_duration = attack_animation_duration
+        self.guard_radius = guard_radius
+        self.home_position = home_position
+        self.velocity = velocity
+        self.facing = facing
+        self.target_id = target_id
+        self.engagement_slot = engagement_slot
+        self.attack_cooldown = attack_cooldown
+        self.opening_delay = opening_delay
+        self.impact_timer = impact_timer
+        self.pending_target_id = pending_target_id
+        self.animation = animation
+        self.animation_time = animation_time
+        self.hit_flash = hit_flash
+        self.death_elapsed = death_elapsed
+        self.neutral = neutral
+
+    def __eq__(self, other):
+        return isinstance(other, BattleAgent) and vars(self) == vars(other)
 
     @property
-    def alive(self) -> bool:
+    def alive(self):
         return self.hp > 0.0
 
     @property
-    def visible(self) -> bool:
+    def visible(self):
         return self.alive or self.death_elapsed < DEATH_VISUAL_DURATION
 
     @property
-    def health_ratio(self) -> float:
+    def health_ratio(self):
         return max(0.0, min(1.0, self.hp / max(0.01, self.max_hp)))
 
-    def export_state(self) -> SoldierState | DefenderState:
+    def export_state(self):
         state_type = (
             DefenderState
             if self.unit_type is BattleUnitType.DEFENDER
@@ -91,28 +119,34 @@ class BattleAgent:
         return state_type(self.unit_id, max(0.01, self.hp), self.source_id)
 
 
-@dataclass(frozen=True)
 class BattleSurvivor:
-    owner: object
-    state: SoldierState | DefenderState
+    def __init__(self, owner, state):
+        self.owner = owner
+        self.state = state
+
+    def __eq__(self, other):
+        return isinstance(other, BattleSurvivor) and vars(self) == vars(other)
 
 
-@dataclass(frozen=True)
 class BattleOutcome:
-    arena_type: BattleArenaType
-    target_id: int
-    winner: object | None
-    captured: bool
-    survivors: tuple[BattleSurvivor, ...]
+    def __init__(self, arena_type, target_id, winner, captured, survivors):
+        self.arena_type = arena_type
+        self.target_id = target_id
+        self.winner = winner
+        self.captured = captured
+        self.survivors = survivors
 
-    def survivors_for(self, owner: object) -> tuple[SoldierState, ...]:
+    def __eq__(self, other):
+        return isinstance(other, BattleOutcome) and vars(self) == vars(other)
+
+    def survivors_for(self, owner):
         return tuple(
             item.state
             for item in self.survivors
             if item.owner is owner and isinstance(item.state, SoldierState)
         )
 
-    def defender_survivors_for(self, owner: object) -> tuple[DefenderState, ...]:
+    def defender_survivors_for(self, owner):
         return tuple(
             item.state
             for item in self.survivors
@@ -120,12 +154,15 @@ class BattleOutcome:
         )
 
 
-@dataclass
 class BattleImpact:
-    position: Point
-    color: tuple[int, int, int]
-    kind: str
-    ttl: float = 0.32
+    def __init__(self, position, color, kind, ttl=0.32):
+        self.position = position
+        self.color = color
+        self.kind = kind
+        self.ttl = ttl
+
+    def __eq__(self, other):
+        return isinstance(other, BattleImpact) and vars(self) == vars(other)
 
 
 class BattleArena:
@@ -133,13 +170,13 @@ class BattleArena:
 
     def __init__(
         self,
-        arena_type: BattleArenaType,
-        target: object,
-    ) -> None:
+        arena_type,
+        target,
+    ):
         self.arena_type = arena_type
         self.target = target
         self.target_id = int(target.id)
-        self.center: Point = (
+        self.center = (
             target.centroid
             if arena_type is BattleArenaType.OBJECTIVE
             else target.battle_position
@@ -147,74 +184,74 @@ class BattleArena:
         self.phase = BattlePhase.PLAYER_COMBAT
         self.elapsed = 0.0
         self.damage_flash = 0.0
-        self.agents: list[BattleAgent] = []
-        self.impacts: list[BattleImpact] = []
-        self._impact_pool: list[BattleImpact] = []
+        self.agents = []
+        self.impacts = []
+        self._impact_pool = []
         self._accumulator = 0.0
         self._queen_cooldown = 0.0
-        self._pending_outcome: BattleOutcome | None = None
+        self._pending_outcome = None
         self._resolution_timer = 0.0
         self._finished = False
-        self._result: BattleOutcome | None = None
-        self._sound_events: list[str] = []
-        self._sound_cooldowns: dict[str, float] = {}
+        self._result = None
+        self._sound_events = []
+        self._sound_cooldowns = {}
 
     @property
-    def finished(self) -> bool:
+    def finished(self):
         return self._finished
 
     @property
-    def result(self) -> BattleOutcome | None:
+    def result(self):
         return self._result
 
     @property
-    def captured_pending(self) -> bool:
+    def captured_pending(self):
         return self._pending_outcome is not None and self._pending_outcome.captured
 
     @property
-    def pending_winner(self) -> object | None:
+    def pending_winner(self):
         return self._pending_outcome.winner if self._pending_outcome is not None else None
 
     @property
-    def position(self) -> Point:
+    def position(self):
         return self.center
 
     @property
-    def living_agents(self) -> list[BattleAgent]:
+    def living_agents(self):
         return [agent for agent in self.agents if agent.alive]
 
     @property
-    def visible_agents(self) -> list[BattleAgent]:
+    def visible_agents(self):
         return [agent for agent in self.agents if agent.visible]
 
     @property
-    def player_factions(self) -> tuple[object, ...]:
-        factions: list[object] = []
+    def player_factions(self):
+        factions = []
         for agent in self.living_agents:
             if agent.neutral or any(owner is agent.owner for owner in factions):
                 continue
             factions.append(agent.owner)
         return tuple(factions)
 
-    def commitment_count(self, player: object) -> int:
+    def commitment_count(self, player):
         return sum(1 for agent in self.living_agents if agent.owner is player)
 
-    def pop_sound_events(self) -> list[str]:
+    def pop_sound_events(self):
         events = self._sound_events[:]
         self._sound_events.clear()
         return events
 
     def add_army(
         self,
-        owner: object,
-        color: tuple[int, int, int],
-        units: Iterable[SoldierState],
-        approach_vector: Point = (1.0, 0.0),
+        owner,
+        color,
+        units,
+        approach_vector = (1.0, 0.0),
         *,
-        neutral: bool = False,
-        defending: bool = False,
-        entry_positions: Iterable[Point] | None = None,
-    ) -> None:
+        neutral = False,
+        defending = False,
+        entry_positions = None,
+    ):
         states = list(units)
         if not states:
             return
@@ -265,10 +302,10 @@ class BattleArena:
 
     def add_defenders(
         self,
-        owner: object,
-        color: tuple[int, int, int],
-        units: Iterable[DefenderState],
-    ) -> None:
+        owner,
+        color,
+        units,
+    ):
         states = list(units)
         if not states:
             return
@@ -305,7 +342,7 @@ class BattleArena:
 
         self._reopen_for_reinforcement()
 
-    def _reopen_for_reinforcement(self) -> None:
+    def _reopen_for_reinforcement(self):
 
         # A fresh rival reopens a defended/failed arena and interrupts core hits.
         if self._pending_outcome is not None and not self._pending_outcome.captured:
@@ -319,7 +356,7 @@ class BattleArena:
             agent.impact_timer = 0.0
         self._refresh_phase()
 
-    def eliminate_owner(self, owner: object) -> None:
+    def eliminate_owner(self, owner):
         """Remove an eliminated faction without skipping death visuals."""
         changed = False
         for agent in self.living_agents:
@@ -335,13 +372,13 @@ class BattleArena:
         if changed:
             self._refresh_phase()
 
-    def update(self, dt: float) -> BattleOutcome | None:
+    def update(self, dt):
         if self._finished:
             return self._result
         dt = max(0.0, dt)
         self.elapsed += dt
         self.damage_flash = max(0.0, self.damage_flash - dt * 3.4)
-        active_impacts: list[BattleImpact] = []
+        active_impacts = []
         for impact in self.impacts:
             impact.ttl -= dt
             if impact.ttl > 0.0:
@@ -374,7 +411,7 @@ class BattleArena:
                 return self._result
         return None
 
-    def _step(self, dt: float) -> None:
+    def _step(self, dt):
         self._advance_visual_timers(dt)
         for name in tuple(self._sound_cooldowns):
             remaining = self._sound_cooldowns[name] - dt
@@ -410,7 +447,7 @@ class BattleArena:
 
         self._refresh_phase()
 
-    def _advance_visual_timers(self, dt: float) -> None:
+    def _advance_visual_timers(self, dt):
         for agent in self.agents:
             agent.animation_time += dt
             agent.hit_flash = max(0.0, agent.hit_flash - dt * 4.5)
@@ -423,7 +460,7 @@ class BattleArena:
                 )
                 agent.velocity = (agent.velocity[0] * damping, agent.velocity[1] * damping)
 
-    def _refresh_phase(self) -> None:
+    def _refresh_phase(self):
         if self._pending_outcome is not None:
             return
         living = self.living_agents
@@ -453,7 +490,7 @@ class BattleArena:
             return
         self._set_phase(BattlePhase.CORE_ASSAULT)
 
-    def _set_phase(self, phase: BattlePhase) -> None:
+    def _set_phase(self, phase):
         if self.phase is phase:
             return
         self.phase = phase
@@ -466,8 +503,8 @@ class BattleArena:
                 agent.velocity = (0.0, 0.0)
 
     @staticmethod
-    def _distinct_owners(agents: Iterable[BattleAgent]) -> list[object]:
-        owners: list[object] = []
+    def _distinct_owners(agents):
+        owners = []
         for agent in agents:
             if not any(owner is agent.owner for owner in owners):
                 owners.append(agent.owner)
@@ -475,16 +512,16 @@ class BattleArena:
 
     def _step_agent_combat(
         self,
-        active: list[BattleAgent],
-        dt: float,
+        active,
+        dt,
         *,
-        resolve_overlaps: bool = True,
-    ) -> None:
+        resolve_overlaps = True,
+    ):
         if not active:
             return
         active = sorted(active, key=lambda item: item.unit_id)
         lookup = {agent.unit_id: agent for agent in active}
-        queued_damage: list[tuple[BattleAgent, BattleAgent, float]] = []
+        queued_damage = []
 
         for agent in active:
             agent.attack_cooldown = max(0.0, agent.attack_cooldown - dt)
@@ -506,7 +543,7 @@ class BattleArena:
                 queued_damage.append((agent, target, damage))
             agent.pending_target_id = None
 
-        reservations: dict[int, list[BattleAgent]] = {}
+        reservations = {}
         for agent in sorted(
             active,
             key=lambda item: (item.pending_target_id is None, item.unit_id),
@@ -534,7 +571,7 @@ class BattleArena:
                 or agent.target_id is not None
             ):
                 continue
-            target: BattleAgent | None = None
+            target = None
             best_key = (float("inf"), 2**63)
             for candidate in active:
                 if (
@@ -621,10 +658,10 @@ class BattleArena:
 
     def _return_to_guard_post(
         self,
-        agent: BattleAgent,
-        active: list[BattleAgent],
-        dt: float,
-    ) -> None:
+        agent,
+        active,
+        dt,
+    ):
         if (
             agent.unit_type is BattleUnitType.DEFENDER
             and agent.home_position is not None
@@ -637,11 +674,11 @@ class BattleArena:
 
     def _move_agent(
         self,
-        agent: BattleAgent,
-        destination: Point,
-        active: list[BattleAgent],
-        dt: float,
-    ) -> None:
+        agent,
+        destination,
+        active,
+        dt,
+    ):
         dx = destination[0] - agent.position[0]
         dy = destination[1] - agent.position[1]
         distance = max(0.01, math.hypot(dx, dy))
@@ -661,7 +698,7 @@ class BattleArena:
         agent.position = (agent.position[0] + vx * dt, agent.position[1] + vy * dt)
         agent.animation = "run"
 
-    def _clamp_to_guard_radius(self, point: Point, radius: float) -> Point:
+    def _clamp_to_guard_radius(self, point, radius):
         dx = point[0] - self.center[0]
         dy = point[1] - self.center[1]
         distance = math.hypot(dx, dy)
@@ -672,7 +709,7 @@ class BattleArena:
             self.center[1] + dy / distance * radius,
         )
 
-    def _step_neutral_retreat(self, dt: float) -> None:
+    def _step_neutral_retreat(self, dt):
         neutral_agents = sorted(
             (agent for agent in self.living_agents if agent.neutral),
             key=lambda item: item.unit_id,
@@ -691,10 +728,10 @@ class BattleArena:
 
     def _apply_agent_damage(
         self,
-        queued_damage: list[tuple[BattleAgent, BattleAgent, float]],
-    ) -> None:
-        grouped: dict[int, list[tuple[BattleAgent, float]]] = {}
-        targets: dict[int, BattleAgent] = {}
+        queued_damage,
+    ):
+        grouped = {}
+        targets = {}
         for attacker, target, damage in queued_damage:
             grouped.setdefault(target.unit_id, []).append((attacker, damage))
             targets[target.unit_id] = target
@@ -733,7 +770,7 @@ class BattleArena:
                 target.animation = "hit"
                 target.animation_time = 0.0
 
-    def _static_defender_attack(self, dt: float) -> None:
+    def _static_defender_attack(self, dt):
         if self.arena_type is not BattleArenaType.TERRITORY:
             return
         if self._queen_cooldown > 0.0 or not self.target.queen.is_alive:
@@ -762,7 +799,7 @@ class BattleArena:
         self._spawn_impact(target.position, self.target.owner.color, "magic")
         self._emit_sound("shield_hit", 0.11)
 
-    def _step_core_assault(self, dt: float) -> None:
+    def _step_core_assault(self, dt):
         attackers = [
             agent
             for agent in self.living_agents
@@ -818,7 +855,7 @@ class BattleArena:
         self._resolve_overlaps(attackers)
 
         # Queen/core retaliation and Soldier impacts are resolved in the same step.
-        queen_target: BattleAgent | None = None
+        queen_target = None
         queen_damage = 0.0
         if (
             self.arena_type is BattleArenaType.TERRITORY
@@ -874,7 +911,7 @@ class BattleArena:
                 self._queue_outcome(self.target.owner, False, self._survivors(defenders))
 
     @staticmethod
-    def _survivors(agents: Iterable[BattleAgent]) -> tuple[BattleSurvivor, ...]:
+    def _survivors(agents):
         return tuple(
             BattleSurvivor(agent.owner, agent.export_state())
             for agent in sorted(agents, key=lambda item: item.unit_id)
@@ -883,10 +920,10 @@ class BattleArena:
 
     def _queue_outcome(
         self,
-        winner: object | None,
-        captured: bool,
-        survivors: tuple[BattleSurvivor, ...],
-    ) -> None:
+        winner,
+        captured,
+        survivors,
+    ):
         if self._pending_outcome is not None:
             return
         self.phase = BattlePhase.RESOLVED
@@ -900,7 +937,7 @@ class BattleArena:
         self._resolution_timer = DEATH_VISUAL_DURATION
 
     @staticmethod
-    def _direction(start: Point, end: Point, fallback: Point) -> Point:
+    def _direction(start, end, fallback):
         dx = end[0] - start[0]
         dy = end[1] - start[1]
         length = math.hypot(dx, dy)
@@ -909,13 +946,13 @@ class BattleArena:
         return dx / length, dy / length
 
     @staticmethod
-    def _knockback_velocity(attacker: Point, target: Point) -> Point:
+    def _knockback_velocity(attacker, target):
         dx = target[0] - attacker[0]
         dy = target[1] - attacker[1]
         length = max(0.01, math.hypot(dx, dy))
         return dx / length * 28.0, dy / length * 18.0
 
-    def _emit_sound(self, name: str, cooldown: float) -> None:
+    def _emit_sound(self, name, cooldown):
         if name in self._sound_cooldowns:
             return
         self._sound_cooldowns[name] = cooldown
@@ -923,11 +960,11 @@ class BattleArena:
 
     def _spawn_impact(
         self,
-        position: Point,
-        color: tuple[int, int, int],
-        kind: str,
-        ttl: float = 0.32,
-    ) -> None:
+        position,
+        color,
+        kind,
+        ttl = 0.32,
+    ):
         if self._impact_pool:
             impact = self._impact_pool.pop()
             impact.position = position
@@ -939,7 +976,7 @@ class BattleArena:
         self.impacts.append(impact)
 
     @staticmethod
-    def _resolve_overlaps(agents: list[BattleAgent]) -> None:
+    def _resolve_overlaps(agents):
         """Deterministic positional correction after local steering."""
         living = sorted((agent for agent in agents if agent.alive), key=lambda item: item.unit_id)
         minimum = AGENT_RADIUS * 2.0
@@ -947,7 +984,7 @@ class BattleArena:
         # neighbor scan when 120+ individually rendered agents are active.
         passes = 1 if len(living) > 120 else 2
         for _ in range(passes):
-            buckets: dict[tuple[int, int], list[BattleAgent]] = {}
+            buckets = {}
             for agent in living:
                 cell = (
                     math.floor(agent.position[0] / minimum),
